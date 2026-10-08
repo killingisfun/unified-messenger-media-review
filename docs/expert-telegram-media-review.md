@@ -28,6 +28,12 @@ WebView2 → C# virtual host / authenticated HTTPS → desktop_api.php
 `telegram_service/rest.php` — рабочий исходник для узких release; перед
 внесением серверных изменений нужно сверить её с `/opt/unified-messenger`.
 
+Snapshot также включает текущий [`telegram_listener.php`](../telegram_service/telegram_listener.php).
+Он запускается как отдельный systemd-процесс и владеет тем же
+`session.madeline`; это важная граница для оценки block cache. Второй
+независимый Madeline-процесс для этой сессии запускать нельзя: media worker
+должен быть встроен в listener или обращаться к нему через внутренний IPC.
+
 ## Важные активные файлы
 
 | Роль | Файл |
@@ -38,6 +44,7 @@ WebView2 → C# virtual host / authenticated HTTPS → desktop_api.php
 | C# WebView2 media relay | [`DesktopUiHost.cs`](../desktop/UnifiedMessenger.Desktop/Services/DesktopUiHost.cs) |
 | C# authenticated HTTPS client | [`DirectConnection.cs`](../desktop/UnifiedMessenger.Desktop/Services/DirectConnection.cs) |
 | Telegram history/attachment URL adapter | [`TelegramClient.php`](../src/Services/TelegramClient.php) |
+| Existing Madeline session owner/listener | [`telegram_listener.php`](../telegram_service/telegram_listener.php) |
 | UI lazy-load, spinner/fallback | [`MediaLoader.js`](../js/src/ui/chat/MediaLoader.js) |
 | UI video/poster markup | [`MessageRenderer.js`](../js/src/ui/chat/MessageRenderer.js) |
 | Existing static contract | [`desktop-telegram-download-contract.cjs`](../tests/desktop-telegram-download-contract.cjs) |
