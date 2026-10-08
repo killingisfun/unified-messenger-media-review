@@ -19,11 +19,11 @@ public sealed class DesktopUiHost : IDisposable
     public const string VirtualHost = "appassets.local";
     private readonly string _uiRoot;
     private readonly DesktopApiClient _api;
-    // Madeline uses one Telegram session writer. WebView's media element can
-    // probe the same video with several byte ranges at once; serializing those
-    // probes prevents the server-side session lock from turning healthy reads
-    // into 503 "busy" responses.
-    private readonly SemaphoreSlim _telegramMediaGate = new(1, 1);
+    // Bound only the HTTP open phase. Holding a client-wide lease until a
+    // video body reaches EOF makes one paused/full response block unrelated
+    // posters and range probes for thirty seconds. The server listener owns
+    // the Madeline session and multiplexes the actual media reads over IPC.
+    private readonly SemaphoreSlim _telegramMediaOpenGate = new(3, 3);
     private CoreWebView2? _webView;
     private bool _disposed;
 
@@ -206,6 +206,7 @@ public sealed class DesktopUiHost : IDisposable
             ["messageId"] = messageId,
         };
         if (source.TryGetValue("dl", out var download)) parameters["dl"] = download;
+        if (source.TryGetValue("kind", out var mediaKind)) parameters["kind"] = mediaKind;
         var rangeHeaders = ReadSingleRangeHeader(request);
         if (rangeHeaders is null)
             return CreateTextResponse("Range not satisfiable", 416, "Range Not Satisfiable", "text/plain; charset=utf-8");
@@ -228,14 +229,13 @@ public sealed class DesktopUiHost : IDisposable
         string requestMethod)
     {
         var acquiredGate = false;
-        var releaseGate = true;
         HttpResponseMessage? response = null;
         try
         {
-            using var queueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            using var queueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
             {
-                await _telegramMediaGate.WaitAsync(queueTimeout.Token);
+                await _telegramMediaOpenGate.WaitAsync(queueTimeout.Token);
                 acquiredGate = true;
             }
             catch (OperationCanceledException) when (queueTimeout.IsCancellationRequested)
@@ -250,6 +250,11 @@ public sealed class DesktopUiHost : IDisposable
             response = await send();
             RecordTransport("telegram_media", (int)response.StatusCode, requestMethod);
             var stream = await response.Content.ReadAsStreamAsync();
+            // Only opening a response is serialized. The body is consumed by
+            // WebView independently and must never keep unrelated Telegram
+            // media behind a paused player.
+            _telegramMediaOpenGate.Release();
+            acquiredGate = false;
             var headers = BuildResponseHeaders(response);
             var statusCode = (int)response.StatusCode;
             var reasonPhrase = response.ReasonPhrase ?? "OK";
@@ -258,29 +263,26 @@ public sealed class DesktopUiHost : IDisposable
             var ownedStream = new ResponseOwnedStream(
                 stream,
                 ownedResponse,
-                () => _telegramMediaGate.Release(),
-                ownedResponse.Content.Headers.ContentLength,
+                contentLength: ownedResponse.Content.Headers.ContentLength,
                 readTimeout: TimeSpan.FromSeconds(30));
             try
             {
                 var webResponse = _webView!.Environment.CreateWebResourceResponse(
                     ownedStream, statusCode, reasonPhrase, headers);
-                releaseGate = false;
                 return webResponse;
             }
             catch
             {
                 // The WebView factory can throw. Make that path release both
-                // the response and the gate instead of stalling every poster.
+                // the response and the body instead of leaking the stream.
                 ownedStream.Dispose();
-                releaseGate = false;
                 throw;
             }
         }
         finally
         {
             response?.Dispose();
-            if (acquiredGate && releaseGate) _telegramMediaGate.Release();
+            if (acquiredGate) _telegramMediaOpenGate.Release();
         }
     }
 

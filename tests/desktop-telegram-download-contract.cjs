@@ -45,15 +45,16 @@ if (!host.includes('SendTelegramMediaWithThumbnailFallbackAsync')
   || !host.includes('kind.Equals("photo"')) {
   throw new Error('Only an image thumbnail may retry the authenticated original relay.');
 }
-if (!host.includes('SemaphoreSlim _telegramMediaGate = new(1, 1)')
+if (!host.includes('SemaphoreSlim _telegramMediaOpenGate = new(3, 3)')
   || !host.includes('CreateTelegramMediaResponseAsync')
   || !host.includes('new ResponseOwnedStream(')
-  || !host.includes('() => _telegramMediaGate.Release()')
-  || !host.includes('new CancellationTokenSource(TimeSpan.FromSeconds(30))')
+  || !host.includes('_telegramMediaOpenGate.Release();')
+  || !host.includes('new CancellationTokenSource(TimeSpan.FromSeconds(10))')
+  || !host.includes('parameters["kind"] = mediaKind')
   || !host.includes('contentLength is long expected && totalRead >= expected')
   || !host.includes('requestedCount == 0 || Volatile.Read(ref _ownersReleased) != 0')
   || !host.includes('catch\n            {\n                DisposeOwners();')) {
-  throw new Error('Telegram response ownership must handle byte-count completion, zero-length reads and read failures safely.');
+  throw new Error('Telegram response opening and ownership lifecycle must remain bounded and safe.');
 }
 if (!telegram.includes("'kind' => strtolower($type)")) {
   throw new Error('Telegram attachment URLs must carry a bounded media kind for the desktop relay.');
@@ -97,6 +98,14 @@ for (const expression of [
   'headers_sent() || !empty($GLOBALS[\'__TG_BINARY_BODY_STARTED__\'])',
 ]) {
   if (!telegramRest.includes(expression)) throw new Error(`Telegram responsive media contract missing: ${expression}`);
+}
+for (const expression of [
+  'function start_madeline_media_ipc_client',
+  '$isDesktopVideo',
+  'start_madeline_media_ipc_client()',
+  '$cacheWholeFile = !$isDesktopVideo',
+]) {
+  if (!telegramRest.includes(expression)) throw new Error(`Telegram IPC video range contract missing: ${expression}`);
 }
 for (const expression of [
   'function tg_cleanup_temporary_media_files',

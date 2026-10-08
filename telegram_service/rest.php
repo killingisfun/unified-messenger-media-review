@@ -1453,6 +1453,38 @@ $settings = new Settings;
     $GLOBALS['__MP_LOCKS__']->attach($mp, $lfh);
     return $mp;
 }
+
+/**
+ * The always-running Telegram listener owns the Madeline session.  A REST
+ * media request therefore becomes an IPC client (confirmed by Madeline's
+ * internal IPC server), not a second session owner.  Unlike UI mutations,
+ * concurrent bounded video ranges must not wait behind an unrelated player
+ * while holding a PHP flock for the whole response body.
+ */
+function start_madeline_media_ipc_client(): API
+{
+    $settings = new Settings;
+    $apiId = (int)($_ENV['TELEGRAM_API_ID'] ?? 0);
+    $apiHash = trim((string)($_ENV['TELEGRAM_API_HASH'] ?? ''));
+    if ($apiId > 0 && $apiHash !== '') {
+        $settings->setAppInfo(
+            (new \danog\MadelineProto\Settings\AppInfo())
+                ->setApiId($apiId)
+                ->setApiHash($apiHash)
+        );
+    }
+    try {
+        $mp = new API(SESSION, $settings);
+        if ($mp->getAuthorization() !== API::LOGGED_IN) {
+            fail('TELEGRAM_NOT_AUTHORIZED: complete login through telegram_auth.php', 401);
+        }
+        $mp->start();
+        return $mp;
+    } catch (\Throwable $e) {
+        fail('MEDIA IPC INIT ERROR: ' . $e->getMessage(), 500);
+    }
+}
+
 function finish_madeline_locked(API $mp): void
 {
     if (isset($GLOBALS['__MP_LOCKS__']) && $GLOBALS['__MP_LOCKS__'] instanceof SplObjectStorage) {
@@ -4522,6 +4554,7 @@ case 'getMessagesReactions': {
                 $mid = (int)($_GET['messageId'] ?? 0);
                 if ($peer === '' || $mid <= 0) fail('chatId and messageId are required');
                 $asAttachment = (int)($_GET['dl'] ?? 0) === 1;
+                $isDesktopVideo = strtolower((string)($_GET['kind'] ?? '')) === 'video';
                 $disposition = $asAttachment ? 'attachment' : 'inline';
                 $cacheDir = rtrim(TMPDIR, '/') . '/cache';
                 $cachePath = $cacheDir . '/' . sha1($peer . '#' . $mid);
@@ -4538,24 +4571,27 @@ case 'getMessagesReactions': {
                 // A second WebView range request must not sit on the global
                 // Madeline session while another request owns this same file.
                 // Either consume a complete cache or return a retryable 503.
-                $lockPath = $cachePath . '.lock';
-                $lock = @fopen($lockPath, 'c');
-                if (!$lock || !@flock($lock, LOCK_EX | LOCK_NB)) {
-                    if ($lock) @fclose($lock);
-                    $cacheMeta = tg_read_media_cache_metadata($cachePath);
-                    if (tg_media_cache_is_complete($cachePath)) {
-                        tg_media_stream_cached_file(
-                            $cachePath,
-                            $cacheMeta['mime'] !== '' ? $cacheMeta['mime'] : detect_mime($cachePath, true, 'application/octet-stream'),
-                            $asAttachment,
-                            'file_' . $mid . '.bin'
-                        );
-                        exit;
+                $lock = null;
+                if (!$isDesktopVideo) {
+                    $lockPath = $cachePath . '.lock';
+                    $lock = @fopen($lockPath, 'c');
+                    if (!$lock || !@flock($lock, LOCK_EX | LOCK_NB)) {
+                        if ($lock) @fclose($lock);
+                        $cacheMeta = tg_read_media_cache_metadata($cachePath);
+                        if (tg_media_cache_is_complete($cachePath)) {
+                            tg_media_stream_cached_file(
+                                $cachePath,
+                                $cacheMeta['mime'] !== '' ? $cacheMeta['mime'] : detect_mime($cachePath, true, 'application/octet-stream'),
+                                $asAttachment,
+                                'file_' . $mid . '.bin'
+                            );
+                            exit;
+                        }
+                        fail('Media is being downloaded by another process, try again later', 503);
                     }
-                    fail('Media is being downloaded by another process, try again later', 503);
                 }
                 try {
-                    $mp = start_madeline_locked();
+                    $mp = $isDesktopVideo ? start_madeline_media_ipc_client() : start_madeline_locked();
                     try {
                         $cacheMeta = tg_read_media_cache_metadata($cachePath);
                         if (tg_media_cache_is_complete($cachePath)) {
@@ -4643,7 +4679,7 @@ case 'getMessagesReactions': {
                             // Cache only a true full-file read. Partial video
                             // probes must never leave a fragment that another
                             // player could mistake for a complete download.
-                            $cacheWholeFile = $start === 0 && $end === $total - 1;
+                            $cacheWholeFile = !$isDesktopVideo && $start === 0 && $end === $total - 1;
                             $tmp = $cacheWholeFile ? tg_track_temporary_media_file($cacheDir . '/' . uniqid('dl_', true)) : '';
                             $sink = $cacheWholeFile ? @fopen($tmp, 'xb') : false;
                             $bytesStreamed = 0;
@@ -4709,8 +4745,10 @@ case 'getMessagesReactions': {
                         finish_madeline_locked($mp);
                     }
                 } finally {
-                    @flock($lock, LOCK_UN);
-                    @fclose($lock);
+                    if (is_resource($lock)) {
+                        @flock($lock, LOCK_UN);
+                        @fclose($lock);
+                    }
                 }
             }
 
