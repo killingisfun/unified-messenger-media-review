@@ -37,9 +37,11 @@ WebView2 → C# virtual host / authenticated HTTPS → desktop_api.php
 | Range parser/cache file response | [`telegram_service/media_range.php`](../telegram_service/media_range.php) |
 | C# WebView2 media relay | [`DesktopUiHost.cs`](../desktop/UnifiedMessenger.Desktop/Services/DesktopUiHost.cs) |
 | C# authenticated HTTPS client | [`DirectConnection.cs`](../desktop/UnifiedMessenger.Desktop/Services/DirectConnection.cs) |
+| Telegram history/attachment URL adapter | [`TelegramClient.php`](../src/Services/TelegramClient.php) |
 | UI lazy-load, spinner/fallback | [`MediaLoader.js`](../js/src/ui/chat/MediaLoader.js) |
 | UI video/poster markup | [`MessageRenderer.js`](../js/src/ui/chat/MessageRenderer.js) |
 | Existing static contract | [`desktop-telegram-download-contract.cjs`](../tests/desktop-telegram-download-contract.cjs) |
+| Server range and media relay contract checks | [`server-media-range-contract.php`](../tests/server-media-range-contract.php), [`telegram-media-relay-contract.php`](../tests/telegram-media-relay-contract.php) |
 
 ## Подтверждённые факты
 
