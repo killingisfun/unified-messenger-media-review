@@ -22,6 +22,15 @@ $cache = $directory . DIRECTORY_SEPARATOR . 'media';
 $temporary = $directory . DIRECTORY_SEPARATOR . 'download';
 
 try {
+    $previousHandler = set_error_handler(static function (int $severity, string $message): never {
+        throw new ErrorException($message, 0, $severity);
+    });
+    try {
+        media_cache_assert(tg_read_media_cache_metadata($cache) === null, 'missing sidecar is a normal cache miss under a throwing error handler');
+    } finally {
+        restore_error_handler();
+    }
+
     file_put_contents($cache, 'partial');
     media_cache_assert(!tg_media_cache_is_complete($cache), 'payload without sidecar is not ready');
 

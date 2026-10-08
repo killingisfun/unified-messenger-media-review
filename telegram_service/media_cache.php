@@ -17,7 +17,17 @@ function tg_media_cache_metadata_path(string $cachePath): string
 /** @return array{size:int,mime:string}|null */
 function tg_read_media_cache_metadata(string $cachePath): ?array
 {
-    $raw = @file_get_contents(tg_media_cache_metadata_path($cachePath));
+    $metaPath = tg_media_cache_metadata_path($cachePath);
+    // MadelineProto installs an error handler that turns even a suppressed
+    // `file_get_contents()` warning into an exception. A missing sidecar is
+    // the normal cache-miss state, not a failed media request.
+    if (!is_file($metaPath)) return null;
+    set_error_handler(static fn(): bool => true);
+    try {
+        $raw = file_get_contents($metaPath);
+    } finally {
+        restore_error_handler();
+    }
     if (!is_string($raw) || $raw === '') return null;
     try {
         $meta = json_decode($raw, true, 8, JSON_THROW_ON_ERROR);
