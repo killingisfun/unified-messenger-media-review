@@ -497,19 +497,31 @@ export class MediaLoader {
           } catch {}
         }
         if (el._bc_tmr) {
-          clearTimeout(el._bc_tmr);
+          this.chat.lifetime.clearTimeout(el._bc_tmr);
           el._bc_tmr = null;
         }
+        if (el._bc_retryTimer) {
+          this.chat.lifetime.clearTimeout(el._bc_retryTimer);
+          el._bc_retryTimer = null;
+        }
+        el._bc_retryGeneration = (el._bc_retryGeneration || 0) + 1;
         delete el.dataset.bcMediaRetryCount;
         delete el.dataset.bcMediaRetryScheduled;
       };
       const error = () => {
+        // The spinner and the video fallback observer both see the same
+        // native error. Let the first observer own the retry transition;
+        // otherwise the second one immediately consumes the next attempt and
+        // renders the final error state.
+        const now = Date.now();
+        if (el._bc_lastFailureAt && now - el._bc_lastFailureAt < 250) return;
+        el._bc_lastFailureAt = now;
         if (el.tagName === 'IMG') delete el.dataset.mediaReady;
         holder.classList.remove('loaded');
         holder.classList.remove('loading');
         holder.setAttribute('aria-busy', 'false');
         spin.remove();
-        if (el._bc_tmr) { clearTimeout(el._bc_tmr); el._bc_tmr = null; }
+        if (el._bc_tmr) { this.chat.lifetime.clearTimeout(el._bc_tmr); el._bc_tmr = null; }
 
         // A saved WPP thumbnail is optional. If it expired or the stored
         // message has no valid preview after all, move this one visible tile
@@ -552,9 +564,15 @@ export class MediaLoader {
           orient();
         }
         // Source errors do not bubble: capture them on the media element.
-        el._bcMediaHandlers = { loadedmetadata: clear, canplay: clear, error };
+        // Metadata only proves that the container is readable. Keep the
+        // retry budget until the player can actually start; this prevents a
+        // later body-read failure from getting an unlimited fresh budget.
+        el._bcMediaHandlers = el.tagName === 'VIDEO'
+          ? { canplay: clear, error }
+          : { loadeddata: clear, error };
         for (const [event, handler] of Object.entries(el._bcMediaHandlers)) el.addEventListener(event, handler, true);
-        if ((el.readyState || 0) >= 1) clear();
+        if (el.tagName !== 'VIDEO' && (el.readyState || 0) >= 2) clear();
+        if (el.tagName === 'VIDEO' && (el.readyState || 0) >= 3) clear();
       }
     } catch (e) {
       console.warn('[BaseChat] _attachMediaSpinner failed', e);
@@ -607,9 +625,12 @@ export class MediaLoader {
       if (el.dataset.bcMediaRetryScheduled === '1') return;
       el.dataset.bcMediaRetryCount = String(tries + 1);
       el.dataset.bcMediaRetryScheduled = '1';
-      this.chat.lifetime.timeout(() => {
+      const generation = (el._bc_retryGeneration || 0) + 1;
+      el._bc_retryGeneration = generation;
+      el._bc_retryTimer = this.chat.lifetime.timeout(() => {
+        el._bc_retryTimer = null;
         delete el.dataset.bcMediaRetryScheduled;
-        if (!el.isConnected || !this.chat._isActiveInstance()) return;
+        if (el._bc_retryGeneration !== generation || !el.isConnected || !this.chat._isActiveInstance()) return;
         delete el.dataset.bcSpinAttached;
         this.chat._attachMediaSpinner(el);
         this.chat._forceReloadMedia(el);
@@ -790,6 +811,9 @@ export class MediaLoader {
           clearFallbackTimer();
           const holder = video.closest('.media-holder.video-holder');
           if (!holder) return;
+          const now = Date.now();
+          if (video._bc_lastFailureAt && now - video._bc_lastFailureAt < 250) return;
+          video._bc_lastFailureAt = now;
           this.chat._addMediaRetryUI(holder, video);
         };
         const markMetadataReady = () => {

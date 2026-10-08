@@ -259,7 +259,8 @@ public sealed class DesktopUiHost : IDisposable
                 stream,
                 ownedResponse,
                 () => _telegramMediaGate.Release(),
-                ownedResponse.Content.Headers.ContentLength);
+                ownedResponse.Content.Headers.ContentLength,
+                readTimeout: TimeSpan.FromSeconds(30));
             try
             {
                 var webResponse = _webView!.Environment.CreateWebResourceResponse(
@@ -758,10 +759,14 @@ public sealed class DesktopUiHost : IDisposable
         Stream stream,
         HttpResponseMessage response,
         Action? onDispose = null,
-        long? contentLength = null) : Stream
+        long? contentLength = null,
+        CancellationTokenSource? bodyLifetime = null,
+        TimeSpan? readTimeout = null) : Stream
     {
         private long _bytesRead;
         private int _ownersReleased;
+        private readonly CancellationTokenSource _bodyLifetime = bodyLifetime ?? new CancellationTokenSource();
+        private readonly TimeSpan _readTimeout = readTimeout ?? TimeSpan.FromSeconds(30);
         public override bool CanRead => Volatile.Read(ref _ownersReleased) == 0 && stream.CanRead;
         public override bool CanSeek => stream.CanSeek;
         public override bool CanWrite => false;
@@ -770,7 +775,7 @@ public sealed class DesktopUiHost : IDisposable
         public override void Flush() => stream.Flush();
         public override Task FlushAsync(CancellationToken cancellationToken) => stream.FlushAsync(cancellationToken);
         public override int Read(byte[] buffer, int offset, int count)
-            => ReadCore(count, () => stream.Read(buffer, offset, count));
+            => ReadCore(count, () => ReadSyncWithTimeout(buffer, offset, count));
         public override int Read(Span<byte> buffer)
         {
             if (buffer.Length == 0 || Volatile.Read(ref _ownersReleased) != 0) return 0;
@@ -785,9 +790,9 @@ public sealed class DesktopUiHost : IDisposable
             }
         }
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            => await ReadCoreAsync(count, () => stream.ReadAsync(buffer, offset, count, cancellationToken));
+            => await ReadCoreAsync(count, token => stream.ReadAsync(buffer, offset, count, token), cancellationToken);
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            => await ReadCoreAsync(buffer.Length, () => stream.ReadAsync(buffer, cancellationToken).AsTask());
+            => await ReadCoreAsync(buffer.Length, token => stream.ReadAsync(buffer, token).AsTask(), cancellationToken);
         public override long Seek(long offset, SeekOrigin origin) => stream.Seek(offset, origin);
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
@@ -805,13 +810,25 @@ public sealed class DesktopUiHost : IDisposable
         private void DisposeOwners()
         {
             if (Interlocked.Exchange(ref _ownersReleased, 1) != 0) return;
-            try { stream.Dispose(); }
+            try { _bodyLifetime.Cancel(); }
             finally
             {
-                try { response.Dispose(); }
-                finally { onDispose?.Invoke(); }
+                try { stream.Dispose(); }
+                finally
+                {
+                    try { response.Dispose(); }
+                    finally
+                    {
+                        try { _bodyLifetime.Dispose(); }
+                        finally { onDispose?.Invoke(); }
+                    }
+                }
             }
         }
+
+        private int ReadSyncWithTimeout(byte[] buffer, int offset, int count)
+            => ReadWithTimeoutAsync(token => stream.ReadAsync(buffer, offset, count, token), CancellationToken.None)
+                .GetAwaiter().GetResult();
 
         private int ReadCore(int requestedCount, Func<int> read)
         {
@@ -827,18 +844,31 @@ public sealed class DesktopUiHost : IDisposable
             }
         }
 
-        private async Task<int> ReadCoreAsync(int requestedCount, Func<Task<int>> read)
+        private async Task<int> ReadCoreAsync(
+            int requestedCount,
+            Func<CancellationToken, Task<int>> read,
+            CancellationToken cancellationToken)
         {
             if (requestedCount == 0 || Volatile.Read(ref _ownersReleased) != 0) return 0;
             try
             {
-                return CompleteRead(requestedCount, await read());
+                return CompleteRead(requestedCount, await ReadWithTimeoutAsync(read, cancellationToken));
             }
             catch
             {
                 DisposeOwners();
                 throw;
             }
+        }
+
+        private async Task<int> ReadWithTimeoutAsync(
+            Func<CancellationToken, Task<int>> read,
+            CancellationToken cancellationToken)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(
+                cancellationToken, _bodyLifetime.Token);
+            timeout.CancelAfter(_readTimeout);
+            return await read(timeout.Token);
         }
 
         private int CompleteRead(int requestedCount, int bytesRead)

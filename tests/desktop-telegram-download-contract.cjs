@@ -108,5 +108,15 @@ for (const expression of [
 if (!mediaLoader.includes("&& window.APP_CONFIG?.desktopMode !== true)")) {
   throw new Error('Desktop must not call the legacy Telegram batch-prefetch endpoint through its virtual UI host.');
 }
+for (const expression of [
+  '_bc_retryTimer',
+  '_bc_retryGeneration',
+  'this.chat.lifetime.clearTimeout(el._bc_retryTimer)',
+  '_bc_lastFailureAt',
+  "el.tagName === 'VIDEO'",
+  'canplay: clear, error',
+]) {
+  if (!mediaLoader.includes(expression)) throw new Error(`Media failure lifecycle contract missing: ${expression}`);
+}
 
 console.log('desktop-telegram-download-contract: ok');
