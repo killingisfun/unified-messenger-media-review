@@ -43,6 +43,21 @@ WebView2 → C# virtual host / authenticated HTTPS → desktop_api.php
 | Existing static contract | [`desktop-telegram-download-contract.cjs`](../tests/desktop-telegram-download-contract.cjs) |
 | Server range and media relay contract checks | [`server-media-range-contract.php`](../tests/server-media-range-contract.php), [`telegram-media-relay-contract.php`](../tests/telegram-media-relay-contract.php) |
 
+## Добавленный UI-контекст
+
+Для отдельного поиска UI-ошибок snapshot также содержит актуальные
+[`main.php`](../main.php) и весь [`js/src/`](../js/src/): state/store,
+provider adapters, shared chat components, lazy media loader, renderer,
+styles и controllers. Это исходники единого интерфейса, которые desktop
+поставляет внутри WebView2.
+
+Проверять стоит прежде всего единый контракт нормализованных сообщений и
+вложений между провайдерами, состояние loading/error/retry, отмену запросов
+при смене чата, повторные subscriptions/realtime handlers, accessibility и
+layout при узком окне. В snapshot намеренно отсутствуют runtime-config,
+bridge router, `.env`, production data, browser session и любые секреты;
+поэтому UI не предназначен для самостоятельного запуска против production.
+
 ## Изменения после первого ревью
 
 Во втором snapshot исправлены конкретные дефекты, найденные при первом

@@ -1,0 +1,666 @@
+
+        :root {
+            --rail-w: 72px;
+            --sidebar-w: 360px;
+            --header-h: 58px;
+        }
+
+        html,
+        body {
+            height: 100%;
+        }
+
+        body {
+            background: #f8f9fa;
+            margin: 0;
+        }
+
+        /* Двухпанельный лэйаут */
+        .app {
+            display: grid;
+            grid-template-columns: var(--rail-w) var(--sidebar-w) 6px 1fr;
+            /* nav-rail | sidebar | resizer | chat */
+            grid-template-rows: 100%;
+            gap: 0;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* ЛЕВАЯ ПАНЕЛЬ (список чатов) */
+        .sidebar {
+            display: flex;
+            flex-direction: column;
+            border-right: 1px solid #e9ecef;
+            background: #fff;
+            min-width: 0;
+        }
+
+        .sidebar-header {
+            height: auto;
+            padding: .75rem 1rem;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            gap: .55rem;
+        }
+
+        .service-actions {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: .4rem;
+            align-items: stretch;
+        }
+
+        .service-group { display: flex; min-width: 0; flex: 1 1 0; gap: .25rem; }
+        .service-group .service-status { flex: 1 1 auto; }
+
+        .service-status {
+            min-width: 0;
+            min-height: 48px;
+            padding: .35rem .55rem;
+            border: 1px solid #adb5bd;
+            border-radius: .55rem;
+            background: #fff;
+            color: #343a40;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: .4rem;
+            text-align: left;
+            transition: background .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease;
+        }
+
+        .service-status:hover { background: #f8f9fa; border-color: #6c757d; }
+        .service-status .service-label { display: block; font-size: .84rem; font-weight: 600; line-height: 1.05; }
+        .service-status .service-state { display: block; font-size: .69rem; line-height: 1.1; opacity: .78; }
+        .service-status--connected.service-status--whatsapp { color: #087f43; border-color: #25d366; background: #edfff4; }
+        .service-status--connected.service-status--telegram { color: #0b73b7; border-color: #229ed9; background: #eef9ff; }
+        .service-status--vk { color: #2d5db3; border-color: #9db7ed; background: #f4f7ff; }
+        .service-status--avito { color: #8f5b00; border-color: #ebcf92; background: #fff9ea; }
+        .service-status--adapter { cursor: default; }
+        .service-status--adapter:hover { background: inherit; }
+        .service-status--connected:hover { filter: brightness(.98); }
+        .service-logout { width: 36px; flex: 0 0 36px; padding: 0; border-radius: .55rem; }
+
+        .sidebar-toolbar {
+            padding: .5rem 1rem;
+            border-bottom: 1px solid #f1f3f5;
+        }
+
+        .sidebar-list {
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .list-group-item.unread {
+            background-color: #f0f8ff;
+            font-weight: 600;
+        }
+
+        .delete-chat-btn {
+            opacity: .35;
+            transition: .2s;
+        }
+
+        .list-group-item:hover .delete-chat-btn {
+            opacity: .9;
+        }
+
+        .sync-indicator {
+            font-size: .8rem;
+            color: #6c757d;
+        }
+
+        /* ПРАВАЯ ПАНЕЛЬ (окно диалога) */
+        .chat-pane {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
+        }
+
+        .chat-header {
+            height: var(--header-h);
+            padding: .75rem 1rem;
+            border-bottom: 1px solid #e9ecef;
+            background: #fff;
+            display: flex;
+            align-items: center;
+            gap: .75rem;
+        }
+
+        .chat-title-box {
+            min-width: 0;
+        }
+
+        .chat-title-box #chat-title {
+            font-weight: 600;
+        }
+
+        .chat-provider-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: .32rem;
+            margin-top: .15rem;
+            padding: .13rem .4rem;
+            border: 1px solid #dfe5eb;
+            border-radius: 999px;
+            background: #f8fafc;
+            color: #56616f;
+            font-size: .69rem;
+            font-weight: 600;
+            line-height: 1.2;
+        }
+        .chat-provider-badge.is-telegram { color: #0b73b7; border-color: #b8e1f7; background: #eef9ff; }
+        .chat-provider-badge.is-whatsapp { color: #087f43; border-color: #b8edd0; background: #edfff4; }
+        .chat-provider-badge.is-vk { color: #2d5db3; border-color: #d4dffd; background: #f4f7ff; }
+        .chat-provider-badge.is-avito { color: #8f5b00; border-color: #f2d9a6; background: #fff9ea; }
+
+        .contact-trigger { cursor: pointer; border: 0; background: transparent; padding: 0; text-align: left; color: inherit; }
+        .contact-trigger:hover #chat-title { text-decoration: underline; }
+        #contact-profile-avatar { width: 74px; height: 74px; object-fit: cover; }
+        .contact-profile-field { padding: .55rem 0; border-bottom: 1px solid #edf0f2; }
+        .contact-profile-field:last-child { border-bottom: 0; }
+        .contact-profile-label { font-size: .78rem; color: #6c757d; }
+        .contact-profile-value { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+        .message-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+            background: #f8f9fa;
+        }
+
+        #messages-container {
+            display: flex;
+            flex-direction: column;
+            gap: .5rem;
+        }
+
+        .chat-input-area {
+            background: #fff;
+            border-top: 1px solid #e9ecef;
+            padding: .75rem;
+            position: relative;
+        }
+
+        .chat-feature-notice {
+            margin: 0 0 .5rem;
+            padding: .45rem .65rem;
+            border: 1px solid #efd39a;
+            border-radius: .5rem;
+            background: #fff8e8;
+            color: #79551a;
+            font-size: .8rem;
+        }
+
+        #emoji-panel {
+            position: absolute;
+            right: 12px;
+            bottom: 64px;
+            width: 280px;
+            max-height: 220px;
+            overflow-y: auto;
+            background: #fff;
+            border: 1px solid rgba(0, 0, 0, .15);
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, .12);
+            padding: 8px;
+            z-index: 50;
+            display: none;
+            /* BaseChat сам управляет */
+        }
+
+        /* Сообщения — общий стиль (совместимо с твоими классами) */
+        .message {
+            max-width: 72%;
+            padding: .5rem 1rem;
+            border-radius: 1rem;
+            word-wrap: break-word;
+            background: #f1f3f5;
+            align-self: flex-start;
+        }
+
+        .message.out {
+            background: #dcf8c6;
+            align-self: flex-end;
+        }
+
+        .timestamp {
+            font-size: .75rem;
+            color: #9aa0a6;
+            display: flex;
+            justify-content: flex-end;
+            gap: .25rem;
+        }
+
+        .msg-photo {
+            max-width: 250px;
+            max-height: 250px;
+            border-radius: 8px;
+        }
+
+        .msg-video {
+            display: block;
+            width: 100%;
+            height: 100%;
+            max-width: 100%;
+            max-height: 100%;
+            aspect-ratio: 16/9;
+            object-fit: contain;
+            border-radius: 0;
+            background: #000;
+        }
+
+        .media-holder.video-holder {
+            display: block;
+            width: min(420px, 100%);
+            max-width: 100%;
+        }
+
+        .video-player {
+            width: 100%;
+            max-width: 100%;
+            height: clamp(180px, 28vw, 320px);
+            aspect-ratio: 16 / 9;
+            overflow: hidden;
+            border-radius: 10px;
+            background: #101418;
+        }
+
+        /* Узкие экраны: список поверх чата */
+        @media (max-width: 900px) {
+            .app {
+                grid-template-columns: 1fr;
+                grid-template-rows: minmax(0, 1fr);
+            }
+
+            .nav-rail,
+            .resizer {
+                display: none;
+            }
+
+            .sidebar {
+                position: relative;
+                z-index: 2;
+                grid-column: 1;
+                grid-row: 1;
+            }
+
+            .chat-pane {
+                display: none;
+                grid-column: 1;
+                grid-row: 1;
+            }
+
+            .sidebar-header { min-height: 0; }
+
+            .app.chat-open .sidebar {
+                display: none;
+            }
+
+            .app.chat-open .chat-pane {
+                display: flex;
+            }
+        }
+
+        /* NAV RAIL (слева, как в WhatsApp Web) */
+        .nav-rail {
+            background: #ffffff;
+            border-right: 1px solid #e9ecef;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: .5rem 0;
+            gap: .25rem;
+        }
+
+        .rail-btn {
+            width: 48px;
+            height: 48px;
+            border: none;
+            border-radius: 12px;
+            background: transparent;
+            display: grid;
+            place-items: center;
+            cursor: pointer;
+        }
+
+        .rail-btn:hover {
+            background: #f1f3f5;
+        }
+
+        .rail-spacer {
+            flex: 1;
+        }
+
+        /* Resizer между панелями */
+        .resizer {
+            cursor: col-resize;
+            background: repeating-linear-gradient(90deg, #f1f3f5, #f1f3f5 1px, #ffffff 1px, #ffffff 3px);
+        }
+
+        .resizer:hover {
+            background: #e9ecef;
+        }
+
+        .resizing * {
+            user-select: none !important;
+            cursor: col-resize !important;
+        }
+
+        /* Коллаж медиа (4 квадрата + счётчик) */
+        .media-collage {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: 1fr 1fr;
+            gap: 2px;
+            width: 260px;
+            height: 260px;
+            border-radius: 10px;
+            overflow: hidden;
+            position: relative;
+            background: #000;
+        }
+
+        .media-collage a {
+            display: block;
+            width: 100%;
+            height: 100%;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .media-collage img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
+        }
+
+        .collage-more {
+            position: absolute;
+            inset: 0;
+            display: grid;
+            place-items: center;
+            font-weight: 700;
+            font-size: 1.75rem;
+            color: #fff;
+            background: rgba(0, 0, 0, .45);
+            pointer-events: none;
+            border-radius: 10px;
+        }
+
+        /* Adjust message bubble to host collage */
+        .message .media-collage {
+            max-width: 100%;
+        }
+
+
+        /* Actual read state is coloured inline by the shared message renderer. */
+        .message.out .timestamp .bi-check2-all {
+            color: inherit;
+        }
+
+        /* WhatsApp blue */
+        .message.out .timestamp .bi-check2 {
+            color: #6c757d;
+            opacity: .8;
+        }
+
+        /* single check (sent) */
+        .message.out .timestamp .bi-clock {
+            color: #6c757d;
+            opacity: .6;
+        }
+
+        /* pending */
+
+
+        /* Датовые разделители в окне чата — как в WhatsApp */
+        .date-separator {
+            display: flex;
+            justify-content: center;
+            margin: 10px 0;
+        }
+
+        .date-separator-badge {
+            display: inline-block;
+            padding: 4px 10px;
+            font-size: .8rem;
+            color: #54656f;
+            background: #e9edef;
+            border: 1px solid #dfe3e7;
+            border-radius: 999px;
+        }
+
+        /* Подсветка выбранного чата слева — как в WhatsApp */
+        .list-group-item.list-group-item-action.active,
+        .list-group-item.list-group-item-action.active:hover,
+        .list-group-item.list-group-item-action.active:focus {
+            background-color: #e9edef;
+            border-color: transparent;
+        }
+
+        /* Слегка скруглить карточку и убрать лишние границы */
+        #chat-list-container .list-group-item {
+            border: none;
+            border-radius: 12px;
+            margin: 2px 6px;
+        }
+
+        #chat-list-container .list-group-item:hover {
+            background: #f5f6f6;
+        }
+
+
+        /* 4-блочная галерея как в WhatsApp */
+
+
+
+
+
+
+        .media-unavailable {
+            background: #dce1e6;
+            color: #5f6b76;
+            min-height: 120px;
+        }
+        .media-unavailable-label {
+            width: 100%;
+            height: 100%;
+            min-height: inherit;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: .35rem;
+            font-size: .78rem;
+            text-align: center;
+            padding: .75rem;
+        }
+        .media-unavailable-label i { font-size: 1.5rem; }
+
+
+
+
+
+        /* Одинаковая кнопка загрузки для Telegram-альбомов и WhatsApp-альбомов. */
+        .message .album-grid .album-tile .tile-dl,
+        .message .media-holder .tile-dl {
+            position: absolute;
+            right: 6px;
+            bottom: 6px;
+            z-index: 4;
+            padding: 4px 7px;
+            border-radius: 7px;
+            background: rgba(0, 0, 0, .58);
+            color: #fff;
+            text-decoration: none;
+            opacity: 0;
+            transition: opacity .15s ease;
+        }
+        .message .album-grid .album-tile:hover .tile-dl,
+        .message .media-holder:hover .tile-dl,
+        .message .album-grid .album-tile:focus-within .tile-dl,
+        .message .media-holder:focus-within .tile-dl { opacity: 1; }
+        @media (hover: none) {
+            .message .album-grid .album-tile .tile-dl,
+            .message .media-holder .tile-dl { opacity: 1; }
+        }
+
+
+
+        .lb-dataContainer .lb-download { color: #fff; text-decoration: underline; margin-left: .35rem; }
+
+        /* Native viewer: works for Telegram and WhatsApp proxy URLs without
+           depending on Lightbox2's image preloader. */
+
+
+        .bc-gallery { position:fixed; inset:0; z-index:2000; display:none; align-items:center; justify-content:center; padding:56px 76px 76px; background:rgba(0,0,0,.88); }
+        .bc-gallery.is-open { display:flex; }
+        .bc-gallery figure { display:flex; flex-direction:column; align-items:center; gap:10px; max-width:100%; max-height:100%; margin:0; }
+        .bc-gallery img { display:block; max-width:100%; max-height:calc(100vh - 150px); object-fit:contain; border-radius:8px; background:#151515; }
+        .bc-gallery figcaption { color:#fff; font-size:.9rem; }
+        .bc-gallery-close,.bc-gallery-nav,.bc-gallery-download { position:absolute; border:0; color:#fff; background:rgba(255,255,255,.16); text-decoration:none; border-radius:8px; }
+        .bc-gallery-close { right:20px; top:14px; width:42px; height:42px; font-size:32px; line-height:36px; }
+        .bc-gallery-nav { top:50%; transform:translateY(-50%); width:48px; height:64px; font-size:48px; line-height:42px; }
+        .bc-gallery-prev { left:18px; } .bc-gallery-next { right:18px; }
+        .bc-gallery-download { bottom:18px; left:50%; transform:translateX(-50%); padding:9px 14px; }
+        .bc-gallery-close:hover,.bc-gallery-nav:hover,.bc-gallery-download:hover { color:#fff; background:rgba(255,255,255,.28); }
+        @media (max-width: 640px) { .bc-gallery { padding:48px 12px 72px; } .bc-gallery-nav { width:38px; height:52px; font-size:38px; } .bc-gallery-prev { left:5px; } .bc-gallery-next { right:5px; } }
+
+
+        /* Единая высота строк списка чатов + обрезка текста в одну строку */
+        #chat-list-container .list-group-item {
+            min-height: 72px;
+            border: none;
+            border-radius: 12px;
+            margin: 2px 6px;
+            padding: 10px 12px;
+        }
+
+        #chat-list-container .list-group-item .chat-avatar {
+            flex-shrink: 0;
+        }
+
+        #chat-list-container .list-group-item .chat-title {
+            display: block;
+            max-width: calc(100% - 90px);
+            /* место под время и кнопку справа */
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        #chat-list-container .list-group-item .chat-text {
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #667781;
+            margin-bottom: .25rem !important;
+        }
+
+        #chat-list-container .list-group-item .chat-time {
+            white-space: nowrap;
+        }
+
+
+        /* Спиннеры и шаблоны альбомов */
+        .media-holder {
+            position: relative;
+            display: inline-block;
+        }
+
+        .media-holder .media-spin {
+            position: absolute;
+            left: 50%;
+            top: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+            z-index: 3;
+        }
+
+        .media-holder.loading .media-spin {
+            display: inline-flex;
+        }
+
+        .media-holder .media-retry {
+            position: absolute;
+            left: 50%;
+            top: calc(50% + 28px);
+            transform: translate(-50%, -50%);
+            z-index: 3;
+            display: none;
+        }
+
+        .media-holder.error .media-retry {
+            display: inline-flex;
+        }
+
+        .media-holder .fade-cover {
+            position: absolute;
+            inset: 0;
+            background: rgba(255, 255, 255, .2);
+            display: none;
+            z-index: 2;
+        }
+
+        .media-holder.loading .fade-cover {
+            display: block;
+        }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        /* ===== Альбомы 1–4: аккуратные сетки ===== */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        /* Keep the mobile rules last: the desktop rail is declared below the
+           first breakpoint block in the restored stylesheet. */
+        @media (max-width: 900px) {
+            .app { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); }
+            .nav-rail, .resizer { display: none; }
+            .sidebar { grid-column: 1; grid-row: 1; height: 100%; min-height: 0; }
+            .chat-pane { grid-column: 1; grid-row: 1; }
+        }
+

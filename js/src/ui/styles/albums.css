@@ -1,0 +1,97 @@
+/* Shared album geometry. Keep provider adapters free of layout rules. */
+.message.album .album-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+  width: 260px;
+  height: 260px;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #000;
+  position: relative;
+}
+.message.album .album-tile {
+  position: relative;
+  overflow: hidden;
+}
+.message.album .album-tile img {
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  object-fit: cover;
+  display: block;
+}
+.message.album .album-tile .tile-dl {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  z-index: 2;
+  padding: 2px 6px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, .35);
+  color: #fff;
+  text-decoration: none;
+  display: none;
+}
+.message.album .album-tile:hover .tile-dl {
+  display: inline-flex;
+}
+.message.album .album-tile.more::after {
+  content: attr(data-more);
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 700;
+  font-size: 1.75rem;
+  background: rgba(0, 0, 0, .45);
+}
+.message.album .album-tile .tile-open,
+        .message.album .album-tile .tile-open .msg-photo {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.message.album .album-tile .bubble {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  margin: 0;
+  max-width: none;
+  min-width: 0;
+  overflow: hidden;
+  background: transparent;
+  border-radius: 0;
+}
+.message.album .album-grid.one {
+  grid-template-columns: 1fr;
+  grid-template-rows: 1fr;
+}
+.message.album .album-grid.two {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr;
+}
+.message.album .album-grid.three {
+  grid-template-columns: 2fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.message.album .album-grid.four {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.message.album .album-grid.three .t1 {
+  grid-row: 1 / span 2;
+  grid-column: 1;
+}
+.message.album .album-grid.three .t2 {
+  grid-row: 1;
+  grid-column: 2;
+}
+.message.album .album-grid.three .t3 {
+  grid-row: 2;
+  grid-column: 2;
+}

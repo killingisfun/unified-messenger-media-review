@@ -1,0 +1,5 @@
+/* Current MessageActions contract; unavailable controls stay visible and explain why. */
+.app .message-action:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 3px; }
+.app .message-action:disabled:hover { transform: none; }
+.chat-history-state { padding: 2rem 1rem; text-align: center; color: var(--ui-muted); }
+.chat-history-state.is-error { color: #b34848; }
