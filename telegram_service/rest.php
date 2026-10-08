@@ -3,8 +3,11 @@ declare(strict_types=1);
 require_once __DIR__ . "/dialog_folders.php";
 require_once __DIR__ . "/message_peer.php";
 
-ini_set('display_errors', 1);
-ini_set('display_startup_errors', 1);
+// Binary media responses must never contain a PHP warning or stack trace.
+// Application failures are still logged and reported as JSON before headers
+// are committed.
+ini_set('display_errors', '0');
+ini_set('display_startup_errors', '0');
 error_reporting(E_ALL);
 
 /**
@@ -22,7 +25,10 @@ require_once __DIR__ . '/album_checkpoint.php';
 
 const SESSION = '/opt/unified-messenger/runtime/telegram/session.madeline';
 const TMPDIR  = '/opt/unified-messenger/runtime/telegram/tmp';
-ignore_user_abort(true);
+// A cancelled browser seek must not keep occupying the Telegram session just
+// to finish a response nobody will read.  Locks are released by finally and
+// the shutdown safety net below.
+ignore_user_abort(false);
 @set_time_limit(0);
 
 ini_set('log_errors', '1');
@@ -74,12 +80,75 @@ if (!function_exists('tg_invalidate_media_cache')) {
         $key = tg_cache_key($peer, $mid);
         $paths = [
             $cacheDir . '/' . $key,           // оригинал
+            $cacheDir . '/' . $key . '.meta.json',
             $cacheDir . '/th_' . $key . '.jpg'// превью
         ];
         foreach ($paths as $p) {
             if (is_file($p)) { @unlink($p); }
         }
     }
+}
+
+function tg_media_cache_metadata_path(string $cachePath): string
+{
+    return $cachePath . '.meta.json';
+}
+
+/** @return array{size:int,mime:string}|null */
+function tg_read_media_cache_metadata(string $cachePath): ?array
+{
+    $raw = @file_get_contents(tg_media_cache_metadata_path($cachePath));
+    if (!is_string($raw) || $raw === '') return null;
+    try {
+        $meta = json_decode($raw, true, 8, JSON_THROW_ON_ERROR);
+    } catch (\Throwable) {
+        return null;
+    }
+    if (!is_array($meta) || !isset($meta['size']) || !is_int($meta['size']) || $meta['size'] < 1) return null;
+    return ['size' => $meta['size'], 'mime' => is_string($meta['mime'] ?? null) ? $meta['mime'] : ''];
+}
+
+function tg_media_cache_is_complete(string $cachePath, ?int $expectedSize = null): bool
+{
+    $meta = tg_read_media_cache_metadata($cachePath);
+    if ($meta === null || !is_file($cachePath)) return false;
+    $size = (int)@filesize($cachePath);
+    $required = $expectedSize ?? $meta['size'];
+    return $size > 0 && $size === $required && $meta['size'] === $required;
+}
+
+function tg_write_media_cache_metadata(string $cachePath, int $expectedSize, string $mime): bool
+{
+    if ($expectedSize < 1 || !is_file($cachePath) || (int)@filesize($cachePath) !== $expectedSize) return false;
+    $metaPath = tg_media_cache_metadata_path($cachePath);
+    $metaTmp = $metaPath . '.' . uniqid('tmp_', true);
+    try {
+        $payload = json_encode(['size' => $expectedSize, 'mime' => $mime], JSON_THROW_ON_ERROR);
+    } catch (\Throwable) {
+        return false;
+    }
+    if (@file_put_contents($metaTmp, $payload, LOCK_EX) === false || !@rename($metaTmp, $metaPath)) {
+        @unlink($metaTmp);
+        return false;
+    }
+    return true;
+}
+
+function tg_publish_complete_media_cache(string $temporaryPath, string $cachePath, int $expectedSize, string $mime): bool
+{
+    if ($expectedSize < 1 || !is_file($temporaryPath) || (int)@filesize($temporaryPath) !== $expectedSize) return false;
+    if (!@rename($temporaryPath, $cachePath)) return false;
+    if (!tg_write_media_cache_metadata($cachePath, $expectedSize, $mime)) {
+        @unlink($cachePath);
+        return false;
+    }
+    return true;
+}
+
+function tg_forget_incomplete_media_cache(string $cachePath): void
+{
+    @unlink($cachePath);
+    @unlink(tg_media_cache_metadata_path($cachePath));
 }
 // (3) add v= helper
 // Удобняшка: добавляет v= к URL, если его ещё нет
@@ -1273,21 +1342,14 @@ function release_lock($fh): void
 
 function acquire_session_lock(string $path, int $timeoutSec = 15): array
 {
+    $fh = @fopen($path, 'c');
+    if (!$fh) return [null, false];
     $start = microtime(true);
     do {
-        if (@mkdir($path, 0770)) return [$path, true];
-        // Releases from before the directory guard used an empty regular file.
-        // A stale one makes every later request wait until its timeout because
-        // mkdir() can never acquire it.  Only migrate an old, empty file after
-        // the same stale interval used for abandoned directory guards.
-        if (is_file($path) && (int)@filesize($path) === 0
-            && (time() - (int)@filemtime($path)) > 90) {
-            @unlink($path);
-        }
-        // A killed PHP request must not make Telegram unavailable forever.
-        if (is_dir($path) && (time() - (int)@filemtime($path)) > 90) @rmdir($path);
+        if (@flock($fh, LOCK_EX | LOCK_NB)) return [$fh, true];
         usleep(100_000);
     } while ((microtime(true) - $start) < $timeoutSec);
+    @fclose($fh);
     return [null, false];
 }
 
@@ -1305,9 +1367,8 @@ function release_all_madeline_locks(): void
 }
 // Some media endpoints stream a file and finish the request with exit.
 // PHP does not enter the surrounding finally blocks in that case, so keep a
-// process-wide safety net: the session-directory guard must always disappear
-// when the request ends.  Without this, the next image waits for the stale
-// lock and the browser receives a 503 after 15 seconds.
+// process-wide safety net: the OS releases a flock if a request dies, but
+// close the handle explicitly as well so normal shutdown does not delay waiters.
 register_shutdown_function('release_all_madeline_locks');
 
 function detect_mime(string $fileOrBytes, bool $isFile = true, string $default = 'application/octet-stream'): string
@@ -1382,7 +1443,9 @@ function extract_sent_message_meta($res): array
 
 function start_madeline_locked(): API
 {
-    $lockFile = TMPDIR . '/madeline_session.guard';
+    // A separate lock name avoids treating an old directory guard as a live
+    // session. flock has kernel-owned lifetime and never needs unsafe TTLs.
+    $lockFile = TMPDIR . '/madeline_session.guard.lock';
     [$lfh, $locked] = acquire_session_lock($lockFile, 15);
     if (!$locked) {
         log_err('session lock timeout');
@@ -4490,38 +4553,43 @@ case 'getMessagesReactions': {
                 $disposition = $asAttachment ? 'attachment' : 'inline';
                 $cacheDir = rtrim(TMPDIR, '/') . '/cache';
                 $cachePath = $cacheDir . '/' . sha1($peer . '#' . $mid);
-                if (is_file($cachePath) && filesize($cachePath) > 0) {
+                $cacheMeta = tg_read_media_cache_metadata($cachePath);
+                if (tg_media_cache_is_complete($cachePath)) {
                     tg_media_stream_cached_file(
                         $cachePath,
-                        detect_mime($cachePath, true, 'application/octet-stream'),
+                        $cacheMeta['mime'] !== '' ? $cacheMeta['mime'] : detect_mime($cachePath, true, 'application/octet-stream'),
                         $asAttachment,
                         'file_' . $mid . '.bin'
                     );
                     exit;
                 }
-                $mp = start_madeline_locked();
-                try {
-                    $lockPath = $cachePath . '.lock';
-                    $lock = @fopen($lockPath, 'c');
-                    if (!$lock || !@flock($lock, LOCK_EX)) {
-                        usleep(300000);
-                        if (is_file($cachePath) && filesize($cachePath) > 0) {
-                            tg_media_stream_cached_file(
-                                $cachePath,
-                                detect_mime($cachePath),
-                                $asAttachment,
-                                'file_' . $mid . '.bin'
-                            );
-                            if ($lock) @fclose($lock);
-                            exit;
-                        }
-                        fail('Media is being downloaded by another process, try again later', 503);
+                // A second WebView range request must not sit on the global
+                // Madeline session while another request owns this same file.
+                // Either consume a complete cache or return a retryable 503.
+                $lockPath = $cachePath . '.lock';
+                $lock = @fopen($lockPath, 'c');
+                if (!$lock || !@flock($lock, LOCK_EX | LOCK_NB)) {
+                    if ($lock) @fclose($lock);
+                    $cacheMeta = tg_read_media_cache_metadata($cachePath);
+                    if (tg_media_cache_is_complete($cachePath)) {
+                        tg_media_stream_cached_file(
+                            $cachePath,
+                            $cacheMeta['mime'] !== '' ? $cacheMeta['mime'] : detect_mime($cachePath, true, 'application/octet-stream'),
+                            $asAttachment,
+                            'file_' . $mid . '.bin'
+                        );
+                        exit;
                     }
+                    fail('Media is being downloaded by another process, try again later', 503);
+                }
+                try {
+                    $mp = start_madeline_locked();
                     try {
-                        if (is_file($cachePath) && filesize($cachePath) > 0) {
+                        $cacheMeta = tg_read_media_cache_metadata($cachePath);
+                        if (tg_media_cache_is_complete($cachePath)) {
                             tg_media_stream_cached_file(
                                 $cachePath,
-                                detect_mime($cachePath),
+                                $cacheMeta['mime'] !== '' ? $cacheMeta['mime'] : detect_mime($cachePath, true, 'application/octet-stream'),
                                 $asAttachment,
                                 'file_' . $mid . '.bin'
                             );
@@ -4554,6 +4622,18 @@ case 'getMessagesReactions': {
                         $document = is_array($m['media']['document'] ?? null) ? $m['media']['document'] : [];
                         $total = (int)($document['size'] ?? 0);
                         $mime = (string)($document['mime_type'] ?? 'application/octet-stream');
+
+                        // Caches created by earlier releases did not have a
+                        // sidecar. Trust one only after the Telegram document
+                        // gives us its authoritative byte size.
+                        if ($total > 0 && is_file($cachePath)) {
+                            if ((int)@filesize($cachePath) === $total
+                                && tg_write_media_cache_metadata($cachePath, $total, $mime)) {
+                                tg_media_stream_cached_file($cachePath, $mime, $asAttachment, $filenameHdr);
+                                exit;
+                            }
+                            tg_forget_incomplete_media_cache($cachePath);
+                        }
 
                         // Do not materialize a whole MP4 before returning a
                         // single byte to the player. Telegram's client shows
@@ -4592,25 +4672,47 @@ case 'getMessagesReactions': {
                             $cacheWholeFile = $start === 0 && $end === $total - 1;
                             $tmp = $cacheWholeFile ? $cacheDir . '/' . uniqid('dl_', true) : '';
                             $sink = $cacheWholeFile ? @fopen($tmp, 'xb') : false;
+                            $bytesStreamed = 0;
+                            $bytesCached = 0;
+                            // MadelineProto 8.7 treats its final offset as
+                            // exclusive; HTTP Content-Range is inclusive.
+                            $downloadEndExclusive = $end + 1;
                             try {
                                 $mp->downloadToCallable(
                                     $m,
-                                    static function (string $payload, int $offset) use ($sink): int {
-                                        if (is_resource($sink)) fwrite($sink, $payload);
+                                    static function (string $payload, int $offset) use ($sink, &$bytesStreamed, &$bytesCached): int {
+                                        if (connection_aborted()) {
+                                            throw new \RuntimeException('Client disconnected during Telegram media stream');
+                                        }
+                                        $payloadLength = strlen($payload);
+                                        if (is_resource($sink)) {
+                                            $written = @fwrite($sink, $payload);
+                                            if ($written !== $payloadLength) {
+                                                throw new \RuntimeException('Unable to write complete Telegram media cache chunk');
+                                            }
+                                            $bytesCached += $written;
+                                        }
+                                        $bytesStreamed += $payloadLength;
+                                        $GLOBALS['__TG_BINARY_BODY_STARTED__'] = true;
                                         echo $payload;
                                         if (function_exists('ob_flush')) @ob_flush();
                                         flush();
-                                        return strlen($payload);
+                                        return $payloadLength;
                                     },
                                     null,
                                     false,
                                     $start,
-                                    $end
+                                    $downloadEndExclusive
                                 );
+                                if ($bytesStreamed !== $length) {
+                                    throw new \RuntimeException('Telegram media range length mismatch');
+                                }
                                 if (is_resource($sink)) {
                                     fclose($sink);
                                     $sink = false;
-                                    @rename($tmp, $cachePath);
+                                    if ($bytesCached !== $total || !tg_publish_complete_media_cache($tmp, $cachePath, $total, $mime)) {
+                                        throw new \RuntimeException('Telegram full media cache integrity check failed');
+                                    }
                                 }
                             } finally {
                                 if (is_resource($sink)) fclose($sink);
@@ -4621,16 +4723,18 @@ case 'getMessagesReactions': {
 
                         $tmp = $cacheDir . '/' . uniqid('dl_');
                         $mp->downloadToFile($m, $tmp);
-                        @rename($tmp, $cachePath);
+                        $downloadedSize = is_file($tmp) ? (int)@filesize($tmp) : 0;
+                        if (!tg_publish_complete_media_cache($tmp, $cachePath, $downloadedSize, detect_mime($tmp, true, 'application/octet-stream'))) {
+                            throw new \RuntimeException('Telegram media cache integrity check failed');
+                        }
                         tg_media_stream_cached_file($cachePath, detect_mime($cachePath), $asAttachment, $filenameHdr);
                         exit;
                     } finally {
-                        @flock($lock, LOCK_UN);
-                        @fclose($lock);
-                        @unlink($lockPath);
+                        finish_madeline_locked($mp);
                     }
                 } finally {
-                    finish_madeline_locked($mp);
+                    @flock($lock, LOCK_UN);
+                    @fclose($lock);
                 }
             }
 
@@ -4793,6 +4897,9 @@ case 'getMessagesReactions': {
     }
 } catch (\Throwable $e) {
     log_err('top-level error', ['e' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+    // A binary response may already have emitted its headers and a prefix of
+    // the body. Appending JSON would corrupt the image/video even further.
+    if (headers_sent() || !empty($GLOBALS['__TG_BINARY_BODY_STARTED__'])) exit;
     fail('ERROR: ' . $e->getMessage(), 500);
 }
 

@@ -46,8 +46,10 @@ if (!host.includes('SendTelegramMediaWithThumbnailFallbackAsync')
 }
 if (!host.includes('SemaphoreSlim _telegramMediaGate = new(1, 1)')
   || !host.includes('CreateTelegramMediaResponseAsync')
-  || !host.includes('new ResponseOwnedStream(stream, ownedResponse, () => _telegramMediaGate.Release())')) {
-  throw new Error('Telegram byte-range probes must remain serialized until their response stream is disposed.');
+  || !host.includes('new ResponseOwnedStream(stream, ownedResponse, () => _telegramMediaGate.Release())')
+  || !host.includes('new CancellationTokenSource(TimeSpan.FromSeconds(30))')
+  || !host.includes('if (bytesRead == 0) DisposeOwners();')) {
+  throw new Error('Telegram queue must time out safely and release a completed response at EOF.');
 }
 if (!telegram.includes("'kind' => strtolower($type)")) {
   throw new Error('Telegram attachment URLs must carry a bounded media kind for the desktop relay.');
@@ -84,6 +86,9 @@ for (const expression of [
   'downloadToCallable(',
   "header('X-Accel-Buffering: no');",
   'Cache only a true full-file read',
+  '$downloadEndExclusive = $end + 1;',
+  'tg_media_cache_is_complete',
+  'tg_publish_complete_media_cache',
 ]) {
   if (!telegramRest.includes(expression)) throw new Error(`Telegram responsive media contract missing: ${expression}`);
 }

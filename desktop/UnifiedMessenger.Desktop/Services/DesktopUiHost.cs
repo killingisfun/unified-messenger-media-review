@@ -227,11 +227,26 @@ public sealed class DesktopUiHost : IDisposable
         Func<Task<HttpResponseMessage>> send,
         string requestMethod)
     {
-        await _telegramMediaGate.WaitAsync();
+        var acquiredGate = false;
         var releaseGate = true;
         HttpResponseMessage? response = null;
         try
         {
+            using var queueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+            try
+            {
+                await _telegramMediaGate.WaitAsync(queueTimeout.Token);
+                acquiredGate = true;
+            }
+            catch (OperationCanceledException) when (queueTimeout.IsCancellationRequested)
+            {
+                RecordTransport("telegram_media_queue", 503, requestMethod);
+                return CreateTextResponse(
+                    "Telegram media queue timed out; retry the request.",
+                    503,
+                    "Service Unavailable",
+                    "text/plain; charset=utf-8");
+            }
             response = await send();
             RecordTransport("telegram_media", (int)response.StatusCode, requestMethod);
             var stream = await response.Content.ReadAsStreamAsync();
@@ -240,15 +255,27 @@ public sealed class DesktopUiHost : IDisposable
             var reasonPhrase = response.ReasonPhrase ?? "OK";
             var ownedResponse = response;
             response = null;
-            releaseGate = false;
-            return _webView!.Environment.CreateWebResourceResponse(
-                new ResponseOwnedStream(stream, ownedResponse, () => _telegramMediaGate.Release()),
-                statusCode, reasonPhrase, headers);
+            var ownedStream = new ResponseOwnedStream(stream, ownedResponse, () => _telegramMediaGate.Release());
+            try
+            {
+                var webResponse = _webView!.Environment.CreateWebResourceResponse(
+                    ownedStream, statusCode, reasonPhrase, headers);
+                releaseGate = false;
+                return webResponse;
+            }
+            catch
+            {
+                // The WebView factory can throw. Make that path release both
+                // the response and the gate instead of stalling every poster.
+                ownedStream.Dispose();
+                releaseGate = false;
+                throw;
+            }
         }
         finally
         {
             response?.Dispose();
-            if (releaseGate) _telegramMediaGate.Release();
+            if (acquiredGate && releaseGate) _telegramMediaGate.Release();
         }
     }
 
@@ -733,10 +760,12 @@ public sealed class DesktopUiHost : IDisposable
         public override long Position { get => stream.Position; set => stream.Position = value; }
         public override void Flush() => stream.Flush();
         public override Task FlushAsync(CancellationToken cancellationToken) => stream.FlushAsync(cancellationToken);
-        public override int Read(byte[] buffer, int offset, int count) => stream.Read(buffer, offset, count);
-        public override int Read(Span<byte> buffer) => stream.Read(buffer);
-        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) => stream.ReadAsync(buffer, offset, count, cancellationToken);
-        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default) => stream.ReadAsync(buffer, cancellationToken);
+        public override int Read(byte[] buffer, int offset, int count) => CompleteRead(stream.Read(buffer, offset, count));
+        public override int Read(Span<byte> buffer) => CompleteRead(stream.Read(buffer));
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+            => CompleteRead(await stream.ReadAsync(buffer, offset, count, cancellationToken));
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            => CompleteRead(await stream.ReadAsync(buffer, cancellationToken));
         public override long Seek(long offset, SeekOrigin origin) => stream.Seek(offset, origin);
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
@@ -760,6 +789,15 @@ public sealed class DesktopUiHost : IDisposable
                 try { response.Dispose(); }
                 finally { onDispose?.Invoke(); }
             }
+        }
+
+        private int CompleteRead(int bytesRead)
+        {
+            // WebView may retain an exhausted Stream instead of disposing it
+            // immediately. Releasing at EOF keeps one finished range from
+            // blocking subsequent thumbnails or seeks.
+            if (bytesRead == 0) DisposeOwners();
+            return bytesRead;
         }
     }
 }

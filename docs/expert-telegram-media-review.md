@@ -43,6 +43,26 @@ WebView2 → C# virtual host / authenticated HTTPS → desktop_api.php
 | Existing static contract | [`desktop-telegram-download-contract.cjs`](../tests/desktop-telegram-download-contract.cjs) |
 | Server range and media relay contract checks | [`server-media-range-contract.php`](../tests/server-media-range-contract.php), [`telegram-media-relay-contract.php`](../tests/telegram-media-relay-contract.php) |
 
+## Изменения после первого ревью
+
+Во втором snapshot исправлены конкретные дефекты, найденные при первом
+ревью. Просьба проверить и эти изменения, и остающиеся архитектурные риски.
+
+- Установленный MadelineProto 8.7 использует **исключающую** верхнюю границу
+  `$end`; HTTP Range использует включающую. Для HTTP `bytes=A-B` relay теперь
+  вызывает `downloadToCallable(..., A, B + 1)` и сверяет число реально
+  переданных bytes с `Content-Length`.
+- Кэш публикуется только после точной проверки размера временного файла.
+  Рядом хранится атомарный sidecar `*.meta.json` с MIME и размером; неполный
+  файл не может пройти обычный fast-path `downloadMedia`.
+- Устаревший directory-lock с 90-секундным TTL заменён на kernel-owned
+  `flock`. Активную загрузку больше нельзя случайно «разлочить» по времени.
+- C#-очередь пока остаётся временной мерой, но имеет предел ожидания 30 секунд,
+  безопасно освобождается при ошибке фабрики WebView и освобождается при EOF,
+  а не только при `Dispose`.
+- После начала binary body PHP больше не дописывает JSON ошибки в
+  image/video-response.
+
 ## Подтверждённые факты
 
 - Для проверенного MP4 сервер отдавал `206`, `Content-Range`,
@@ -53,15 +73,15 @@ WebView2 → C# virtual host / authenticated HTTPS → desktop_api.php
   скачиваемый файл.
 - `downloadToCallable` вызывается с `seekable=false`; callback отдаёт bytes в
   той же последовательности, в которой их запрашивает текущий HTTP response.
-- Для полного GET текущий путь одновременно stream'ит и создаёт обычный
-  cache file. Частичный Range в cache не считается готовым файлом.
+- Для полного GET текущий путь одновременно stream'ит и создаёт cache file
+  только после точной проверки размера. Частичный Range в cache не считается
+  готовым файлом.
 - `503` может быть сформирован нашим кодом: global
   `madeline_session.guard` в `start_madeline_locked()` либо media cache lock,
   а не обязательно внутренним lock Madeline.
-- В commit `b4bca14` добавлена временная C#-сериализация Telegram streams.
-  Она устраняет конкурентные запросы, но не является целевой архитектурой:
-  WebView может долго держать stream открытым и задерживать другой poster или
-  seek.
+- C#-сериализация Telegram streams всё ещё не является целевой архитектурой:
+  большой активный Range всё равно способен задержать другой poster или seek.
+  Нужен server-side owner/block cache ниже.
 
 ## Что проверить в первую очередь
 
