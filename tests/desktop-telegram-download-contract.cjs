@@ -5,6 +5,7 @@ const connection = fs.readFileSync('desktop/UnifiedMessenger.Desktop/Services/Di
 const facade = fs.readFileSync('desktop_api.php', 'utf8');
 const telegram = fs.readFileSync('src/Services/TelegramClient.php', 'utf8');
 const telegramRest = fs.readFileSync('telegram_service/rest.php', 'utf8');
+const telegramCache = fs.readFileSync('telegram_service/media_cache.php', 'utf8');
 const mediaLoader = fs.readFileSync('js/src/ui/chat/MediaLoader.js', 'utf8');
 
 if (!telegram.includes("'telegram_download.php?'")) {
@@ -46,10 +47,13 @@ if (!host.includes('SendTelegramMediaWithThumbnailFallbackAsync')
 }
 if (!host.includes('SemaphoreSlim _telegramMediaGate = new(1, 1)')
   || !host.includes('CreateTelegramMediaResponseAsync')
-  || !host.includes('new ResponseOwnedStream(stream, ownedResponse, () => _telegramMediaGate.Release())')
+  || !host.includes('new ResponseOwnedStream(')
+  || !host.includes('() => _telegramMediaGate.Release()')
   || !host.includes('new CancellationTokenSource(TimeSpan.FromSeconds(30))')
-  || !host.includes('if (bytesRead == 0) DisposeOwners();')) {
-  throw new Error('Telegram queue must time out safely and release a completed response at EOF.');
+  || !host.includes('contentLength is long expected && totalRead >= expected')
+  || !host.includes('requestedCount == 0 || Volatile.Read(ref _ownersReleased) != 0')
+  || !host.includes('catch\n            {\n                DisposeOwners();')) {
+  throw new Error('Telegram response ownership must handle byte-count completion, zero-length reads and read failures safely.');
 }
 if (!telegram.includes("'kind' => strtolower($type)")) {
   throw new Error('Telegram attachment URLs must carry a bounded media kind for the desktop relay.');
@@ -89,8 +93,17 @@ for (const expression of [
   '$downloadEndExclusive = $end + 1;',
   'tg_media_cache_is_complete',
   'tg_publish_complete_media_cache',
+  'tg_track_temporary_media_file',
+  'headers_sent() || !empty($GLOBALS[\'__TG_BINARY_BODY_STARTED__\'])',
 ]) {
   if (!telegramRest.includes(expression)) throw new Error(`Telegram responsive media contract missing: ${expression}`);
+}
+for (const expression of [
+  'function tg_cleanup_temporary_media_files',
+  'function tg_media_cache_is_complete',
+  'function tg_publish_complete_media_cache',
+]) {
+  if (!telegramCache.includes(expression)) throw new Error(`Telegram cache contract missing: ${expression}`);
 }
 if (!mediaLoader.includes("&& window.APP_CONFIG?.desktopMode !== true)")) {
   throw new Error('Desktop must not call the legacy Telegram batch-prefetch endpoint through its virtual UI host.');

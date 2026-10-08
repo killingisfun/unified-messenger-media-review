@@ -69,8 +69,10 @@ if (!function_exists('tg_media_stream_cached_file')) {
     function tg_media_stream_cached_file(string $path, string $mime, bool $asAttachment, string $filename): void
     {
         $total = (int)@filesize($path);
-        $plan = tg_media_single_byte_range_plan((string)($_SERVER['HTTP_RANGE'] ?? ''), $total);
         $isHead = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'HEAD';
+        // Range is defined for GET. A successful HEAD describes the complete
+        // representation and never promises a partial body it cannot return.
+        $plan = $isHead ? null : tg_media_single_byte_range_plan((string)($_SERVER['HTTP_RANGE'] ?? ''), $total);
         $filename = str_replace(["\r", "\n", '"'], '', basename($filename));
         if ($filename === '') $filename = 'file.bin';
 

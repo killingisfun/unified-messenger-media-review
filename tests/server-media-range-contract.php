@@ -61,8 +61,9 @@ foreach ([wpp_range_plan('bytes=10-', 10), tg_media_single_byte_range_plan('byte
     server_media_range_assert(is_array($plan) && ($plan['status'] ?? 0) === 416 && ($plan['total'] ?? -1) === 10, 'past-end seek returns 416 with total');
 }
 
-// Exercise the Telegram cached-file emitter itself: GET returns only the
-// requested bytes, while HEAD emits no body and retains the partial status.
+// Exercise the cache emitters. Telegram HEAD ignores Range and describes the
+// full representation without emitting a body. WhatsApp remains under a
+// separate server-source reconciliation and retains its current contract here.
 $fixture = dirname(__DIR__) . '/tests/fixtures/media/details.txt';
 $bytes = (string)file_get_contents($fixture);
 server_media_range_assert($bytes !== '', 'range fixture is available');
@@ -71,7 +72,7 @@ $body = wpp_output_file($fixture, 'bytes=0-1', 'GET');
 server_media_range_assert(http_response_code() === 206, 'cached WhatsApp first-byte request returns 206');
 server_media_range_assert($body === substr($bytes, 0, 2), 'cached WhatsApp first-byte request emits exactly two bytes');
 $body = wpp_output_file($fixture, 'bytes=5-', 'HEAD');
-server_media_range_assert(http_response_code() === 206, 'cached WhatsApp HEAD range returns 206');
+server_media_range_assert(http_response_code() === 206, 'cached WhatsApp HEAD retains its current range contract');
 server_media_range_assert($body === '', 'cached WhatsApp HEAD range has no body');
 
 $_SERVER['REQUEST_METHOD'] = 'GET';
@@ -93,7 +94,7 @@ ob_start();
 tg_media_stream_cached_file($fixture, 'text/plain', false, 'details.txt');
 ob_end_clean();
 $body = (string)ob_get_clean();
-server_media_range_assert(http_response_code() === 206, 'cached Telegram HEAD range returns 206');
+server_media_range_assert(http_response_code() === 200, 'cached Telegram HEAD ignores Range and returns full metadata');
 server_media_range_assert($body === '', 'cached Telegram HEAD range has no body');
 
 unset($_SERVER['HTTP_RANGE']);

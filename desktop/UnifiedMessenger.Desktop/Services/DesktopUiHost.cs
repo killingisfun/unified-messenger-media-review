@@ -255,7 +255,11 @@ public sealed class DesktopUiHost : IDisposable
             var reasonPhrase = response.ReasonPhrase ?? "OK";
             var ownedResponse = response;
             response = null;
-            var ownedStream = new ResponseOwnedStream(stream, ownedResponse, () => _telegramMediaGate.Release());
+            var ownedStream = new ResponseOwnedStream(
+                stream,
+                ownedResponse,
+                () => _telegramMediaGate.Release(),
+                ownedResponse.Content.Headers.ContentLength);
             try
             {
                 var webResponse = _webView!.Environment.CreateWebResourceResponse(
@@ -750,22 +754,40 @@ public sealed class DesktopUiHost : IDisposable
         }
     }
 
-    private sealed class ResponseOwnedStream(Stream stream, HttpResponseMessage response, Action? onDispose = null) : Stream
+    private sealed class ResponseOwnedStream(
+        Stream stream,
+        HttpResponseMessage response,
+        Action? onDispose = null,
+        long? contentLength = null) : Stream
     {
-        private int _disposed;
-        public override bool CanRead => stream.CanRead;
+        private long _bytesRead;
+        private int _ownersReleased;
+        public override bool CanRead => Volatile.Read(ref _ownersReleased) == 0 && stream.CanRead;
         public override bool CanSeek => stream.CanSeek;
         public override bool CanWrite => false;
         public override long Length => stream.Length;
         public override long Position { get => stream.Position; set => stream.Position = value; }
         public override void Flush() => stream.Flush();
         public override Task FlushAsync(CancellationToken cancellationToken) => stream.FlushAsync(cancellationToken);
-        public override int Read(byte[] buffer, int offset, int count) => CompleteRead(stream.Read(buffer, offset, count));
-        public override int Read(Span<byte> buffer) => CompleteRead(stream.Read(buffer));
+        public override int Read(byte[] buffer, int offset, int count)
+            => ReadCore(count, () => stream.Read(buffer, offset, count));
+        public override int Read(Span<byte> buffer)
+        {
+            if (buffer.Length == 0 || Volatile.Read(ref _ownersReleased) != 0) return 0;
+            try
+            {
+                return CompleteRead(buffer.Length, stream.Read(buffer));
+            }
+            catch
+            {
+                DisposeOwners();
+                throw;
+            }
+        }
         public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
-            => CompleteRead(await stream.ReadAsync(buffer, offset, count, cancellationToken));
+            => await ReadCoreAsync(count, () => stream.ReadAsync(buffer, offset, count, cancellationToken));
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-            => CompleteRead(await stream.ReadAsync(buffer, cancellationToken));
+            => await ReadCoreAsync(buffer.Length, () => stream.ReadAsync(buffer, cancellationToken).AsTask());
         public override long Seek(long offset, SeekOrigin origin) => stream.Seek(offset, origin);
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
@@ -782,7 +804,7 @@ public sealed class DesktopUiHost : IDisposable
 
         private void DisposeOwners()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            if (Interlocked.Exchange(ref _ownersReleased, 1) != 0) return;
             try { stream.Dispose(); }
             finally
             {
@@ -791,12 +813,49 @@ public sealed class DesktopUiHost : IDisposable
             }
         }
 
-        private int CompleteRead(int bytesRead)
+        private int ReadCore(int requestedCount, Func<int> read)
         {
-            // WebView may retain an exhausted Stream instead of disposing it
-            // immediately. Releasing at EOF keeps one finished range from
-            // blocking subsequent thumbnails or seeks.
-            if (bytesRead == 0) DisposeOwners();
+            if (requestedCount == 0 || Volatile.Read(ref _ownersReleased) != 0) return 0;
+            try
+            {
+                return CompleteRead(requestedCount, read());
+            }
+            catch
+            {
+                DisposeOwners();
+                throw;
+            }
+        }
+
+        private async Task<int> ReadCoreAsync(int requestedCount, Func<Task<int>> read)
+        {
+            if (requestedCount == 0 || Volatile.Read(ref _ownersReleased) != 0) return 0;
+            try
+            {
+                return CompleteRead(requestedCount, await read());
+            }
+            catch
+            {
+                DisposeOwners();
+                throw;
+            }
+        }
+
+        private int CompleteRead(int requestedCount, int bytesRead)
+        {
+            if (bytesRead > 0)
+            {
+                var totalRead = Interlocked.Add(ref _bytesRead, bytesRead);
+                // A known Content-Length is definitive: WebView need not make
+                // one more read solely to discover EOF before the next media
+                // request can proceed.
+                if (contentLength is long expected && totalRead >= expected) DisposeOwners();
+            }
+            else if (requestedCount > 0)
+            {
+                // A zero-length read with a non-empty destination means EOF.
+                DisposeOwners();
+            }
             return bytesRead;
         }
     }

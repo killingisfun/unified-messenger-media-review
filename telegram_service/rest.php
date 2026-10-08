@@ -2,6 +2,7 @@
 declare(strict_types=1);
 require_once __DIR__ . "/dialog_folders.php";
 require_once __DIR__ . "/message_peer.php";
+require_once __DIR__ . '/media_cache.php';
 
 // Binary media responses must never contain a PHP warning or stack trace.
 // Application failures are still logged and reported as JSON before headers
@@ -89,67 +90,6 @@ if (!function_exists('tg_invalidate_media_cache')) {
     }
 }
 
-function tg_media_cache_metadata_path(string $cachePath): string
-{
-    return $cachePath . '.meta.json';
-}
-
-/** @return array{size:int,mime:string}|null */
-function tg_read_media_cache_metadata(string $cachePath): ?array
-{
-    $raw = @file_get_contents(tg_media_cache_metadata_path($cachePath));
-    if (!is_string($raw) || $raw === '') return null;
-    try {
-        $meta = json_decode($raw, true, 8, JSON_THROW_ON_ERROR);
-    } catch (\Throwable) {
-        return null;
-    }
-    if (!is_array($meta) || !isset($meta['size']) || !is_int($meta['size']) || $meta['size'] < 1) return null;
-    return ['size' => $meta['size'], 'mime' => is_string($meta['mime'] ?? null) ? $meta['mime'] : ''];
-}
-
-function tg_media_cache_is_complete(string $cachePath, ?int $expectedSize = null): bool
-{
-    $meta = tg_read_media_cache_metadata($cachePath);
-    if ($meta === null || !is_file($cachePath)) return false;
-    $size = (int)@filesize($cachePath);
-    $required = $expectedSize ?? $meta['size'];
-    return $size > 0 && $size === $required && $meta['size'] === $required;
-}
-
-function tg_write_media_cache_metadata(string $cachePath, int $expectedSize, string $mime): bool
-{
-    if ($expectedSize < 1 || !is_file($cachePath) || (int)@filesize($cachePath) !== $expectedSize) return false;
-    $metaPath = tg_media_cache_metadata_path($cachePath);
-    $metaTmp = $metaPath . '.' . uniqid('tmp_', true);
-    try {
-        $payload = json_encode(['size' => $expectedSize, 'mime' => $mime], JSON_THROW_ON_ERROR);
-    } catch (\Throwable) {
-        return false;
-    }
-    if (@file_put_contents($metaTmp, $payload, LOCK_EX) === false || !@rename($metaTmp, $metaPath)) {
-        @unlink($metaTmp);
-        return false;
-    }
-    return true;
-}
-
-function tg_publish_complete_media_cache(string $temporaryPath, string $cachePath, int $expectedSize, string $mime): bool
-{
-    if ($expectedSize < 1 || !is_file($temporaryPath) || (int)@filesize($temporaryPath) !== $expectedSize) return false;
-    if (!@rename($temporaryPath, $cachePath)) return false;
-    if (!tg_write_media_cache_metadata($cachePath, $expectedSize, $mime)) {
-        @unlink($cachePath);
-        return false;
-    }
-    return true;
-}
-
-function tg_forget_incomplete_media_cache(string $cachePath): void
-{
-    @unlink($cachePath);
-    @unlink(tg_media_cache_metadata_path($cachePath));
-}
 // (3) add v= helper
 // Удобняшка: добавляет v= к URL, если его ещё нет
 function add_v_param(string $url, $v): string {
@@ -421,6 +361,13 @@ set_error_handler(function ($errno, $errstr, $errfile, $errline) {
 register_shutdown_function(function () {
     $e = error_get_last();
     if ($e && in_array($e['type'], [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+        // A media response may already have begun. Never append JSON to its
+        // binary body; later shutdown handlers must still release locks and
+        // remove request-local temporary files.
+        if (headers_sent() || !empty($GLOBALS['__TG_BINARY_BODY_STARTED__'])) {
+            error_log('Telegram REST fatal after binary response began: ' . $e['message']);
+            return;
+        }
         json_cors();
         http_response_code(500);
         header('Content-Type: application/json; charset=utf-8');
@@ -1236,18 +1183,25 @@ function proactive_cache_media(API $mp, string $peer, int $mid): bool
     $cacheDir = rtrim(TMPDIR, '/') . '/cache';
     $cachePath = $cacheDir . '/' . $cacheKey;
 
-    if (is_file($cachePath) && filesize($cachePath) > 0) return true;
+    if (tg_media_cache_is_complete($cachePath)) return true;
+    if (is_file($cachePath)) tg_forget_incomplete_media_cache($cachePath);
 
     try {
         $m = $mp->messages->getMessages(['peer' => $peer, 'id' => [$mid]])['messages'][0] ?? null;
         if ($m && !empty($m['media'])) {
-            $tmp = $cacheDir . '/' . uniqid('dl_', true);
+            $tmp = tg_track_temporary_media_file($cacheDir . '/' . uniqid('dl_', true));
             $mp->downloadToFile($m, $tmp);
             if (is_file($tmp) && filesize($tmp) > 0) {
-                @rename($tmp, $cachePath);
-                return true;
+                $published = tg_publish_downloaded_media_cache(
+                    $tmp,
+                    $cachePath,
+                    detect_mime($tmp, true, 'application/octet-stream')
+                );
+                tg_untrack_temporary_media_file($tmp);
+                return $published;
             }
             @unlink($tmp);
+            tg_untrack_temporary_media_file($tmp);
         }
     } catch (\Throwable $e) {
         log_err('proactive_cache_media FAILED', ['chatId' => $peer, 'msgId' => $mid, 'error' => $e->getMessage()]);
@@ -1272,14 +1226,22 @@ function ensure_media_cached_for_list(API $mp, string $peer, array $rawMessages)
 
         $key = sha1($peer . '#' . $mid);
         $path = $cacheDir . '/' . $key;
-        if (!is_file($path) || filesize($path) === 0) {
+        if (!tg_media_cache_is_complete($path)) {
+            if (is_file($path)) tg_forget_incomplete_media_cache($path);
             try {
-                $tmp = $cacheDir . '/' . uniqid('dl_');
+                $tmp = tg_track_temporary_media_file($cacheDir . '/' . uniqid('dl_'));
                 $mp->downloadToFile($m, $tmp);
                 if (is_file($tmp) && filesize($tmp) > 0) {
-                    @rename($tmp, $path);
+                    $published = tg_publish_downloaded_media_cache(
+                        $tmp,
+                        $path,
+                        detect_mime($tmp, true, 'application/octet-stream')
+                    );
+                    tg_untrack_temporary_media_file($tmp);
+                    if (!$published) @unlink($tmp);
                 } else {
                     @unlink($tmp);
+                    tg_untrack_temporary_media_file($tmp);
                 }
             } catch (\Throwable $e) {
                 log_err('ensure_media_cached_for_list: media download failed', ['peer' => $peer, 'mid' => $mid, 'err' => $e->getMessage()]);
@@ -2239,7 +2201,7 @@ try {
 
 
                         // 1. Сначала проверяем кэш
-                        if (is_file($cachePath) && filesize($cachePath) > 0) {
+                        if (tg_media_cache_is_complete($cachePath)) {
                             $ext = tg_ext_by_mime(detect_mime($cachePath, true, 'application/octet-stream'));
                             $resultsMap[$key] = [
                                 // e-вариант с расширением
@@ -2254,10 +2216,20 @@ try {
                         try {
                             $m = $mp->messages->getMessages(['peer' => $peer, 'id' => [$mid]])['messages'][0] ?? null;
                             if ($m && !empty($m['media'])) {
-                                $tmp = $cacheDir . '/' . uniqid('dl_');
+                                if (is_file($cachePath)) tg_forget_incomplete_media_cache($cachePath);
+                                $tmp = tg_track_temporary_media_file($cacheDir . '/' . uniqid('dl_'));
                                 $mp->downloadToFile($m, $tmp);
                                 if (is_file($tmp) && filesize($tmp) > 0) {
-                                    @rename($tmp, $cachePath);
+                                    if (!tg_publish_downloaded_media_cache(
+                                        $tmp,
+                                        $cachePath,
+                                        detect_mime($tmp, true, 'application/octet-stream')
+                                    )) {
+                                        @unlink($tmp);
+                                        tg_untrack_temporary_media_file($tmp);
+                                        continue;
+                                    }
+                                    tg_untrack_temporary_media_file($tmp);
                                     $ext = tg_ext_by_mime(detect_mime($cachePath, true, 'application/octet-stream'));
                                     $resultsMap[$key] = [
                                         'cache_url'  => rtrim(BASE_URL_MADELINE, '/') . '/telegram_cache_e/' . $cacheKey . $ext,
@@ -4643,7 +4615,10 @@ case 'getMessagesReactions': {
                         // HTTP range response), so retain the established
                         // file-cache path for that compatibility case.
                         if ($total > 0) {
-                            $plan = tg_media_single_byte_range_plan((string)($_SERVER['HTTP_RANGE'] ?? ''), $total);
+                            $isHead = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'HEAD';
+                            // RFC 9110 applies Range to GET. HEAD describes
+                            // the whole representation and has no body.
+                            $plan = $isHead ? null : tg_media_single_byte_range_plan((string)($_SERVER['HTTP_RANGE'] ?? ''), $total);
                             if (is_array($plan) && ($plan['status'] ?? 0) === 416) {
                                 http_response_code(416);
                                 header('Content-Range: bytes */' . $plan['total']);
@@ -4655,7 +4630,6 @@ case 'getMessagesReactions': {
                             $start = $isPartial ? (int)$plan['start'] : 0;
                             $end = $isPartial ? (int)$plan['end'] : $total - 1;
                             $length = $isPartial ? (int)$plan['length'] : $total;
-                            $isHead = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) === 'HEAD';
 
                             http_response_code($isPartial ? 206 : 200);
                             header('Content-Type: ' . $mime);
@@ -4670,7 +4644,7 @@ case 'getMessagesReactions': {
                             // probes must never leave a fragment that another
                             // player could mistake for a complete download.
                             $cacheWholeFile = $start === 0 && $end === $total - 1;
-                            $tmp = $cacheWholeFile ? $cacheDir . '/' . uniqid('dl_', true) : '';
+                            $tmp = $cacheWholeFile ? tg_track_temporary_media_file($cacheDir . '/' . uniqid('dl_', true)) : '';
                             $sink = $cacheWholeFile ? @fopen($tmp, 'xb') : false;
                             $bytesStreamed = 0;
                             $bytesCached = 0;
@@ -4713,6 +4687,7 @@ case 'getMessagesReactions': {
                                     if ($bytesCached !== $total || !tg_publish_complete_media_cache($tmp, $cachePath, $total, $mime)) {
                                         throw new \RuntimeException('Telegram full media cache integrity check failed');
                                     }
+                                    tg_untrack_temporary_media_file($tmp);
                                 }
                             } finally {
                                 if (is_resource($sink)) fclose($sink);
@@ -4721,12 +4696,13 @@ case 'getMessagesReactions': {
                             exit;
                         }
 
-                        $tmp = $cacheDir . '/' . uniqid('dl_');
+                        $tmp = tg_track_temporary_media_file($cacheDir . '/' . uniqid('dl_'));
                         $mp->downloadToFile($m, $tmp);
                         $downloadedSize = is_file($tmp) ? (int)@filesize($tmp) : 0;
                         if (!tg_publish_complete_media_cache($tmp, $cachePath, $downloadedSize, detect_mime($tmp, true, 'application/octet-stream'))) {
                             throw new \RuntimeException('Telegram media cache integrity check failed');
                         }
+                        tg_untrack_temporary_media_file($tmp);
                         tg_media_stream_cached_file($cachePath, detect_mime($cachePath), $asAttachment, $filenameHdr);
                         exit;
                     } finally {
@@ -4756,7 +4732,7 @@ case 'getMessagesReactions': {
                 if (!is_dir($cacheDir)) @mkdir($cacheDir, 0775, true);
                 $cachePath = $cacheDir . '/' . $key;
 
-                $ready = is_file($cachePath) && filesize($cachePath) > 0;
+                $ready = tg_media_cache_is_complete($cachePath);
                 $pub   = tg_media_host() . '/pub/' . $key;
 
                 json_cors();
@@ -4780,13 +4756,14 @@ case 'getMessagesReactions': {
 
                 $cacheDir  = rtrim(TMPDIR, '/') . '/cache';
                 $cachePath = $cacheDir . '/' . $key;
-                if (!is_file($cachePath) || filesize($cachePath) === 0) {
+                $cacheMeta = tg_read_media_cache_metadata($cachePath);
+                if (!tg_media_cache_is_complete($cachePath)) {
                     http_response_code(404);
                     echo 'not found';
                     exit;
                 }
 
-                $mime = detect_mime($cachePath, true, 'application/octet-stream');
+                $mime = $cacheMeta['mime'] !== '' ? $cacheMeta['mime'] : detect_mime($cachePath, true, 'application/octet-stream');
                 $ext  = tg_ext_by_mime($mime);
 
                 header('Access-Control-Allow-Origin: *');

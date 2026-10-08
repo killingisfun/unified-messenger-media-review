@@ -73,10 +73,18 @@ bridge router, `.env`, production data, browser session и любые секре
 - Устаревший directory-lock с 90-секундным TTL заменён на kernel-owned
   `flock`. Активную загрузку больше нельзя случайно «разлочить» по времени.
 - C#-очередь пока остаётся временной мерой, но имеет предел ожидания 30 секунд,
-  безопасно освобождается при ошибке фабрики WebView и освобождается при EOF,
-  а не только при `Dispose`.
+  безопасно освобождается при ошибке фабрики WebView, настоящем EOF,
+  исключении чтения и после известного `Content-Length`. Нулевой read с
+  нулевым буфером не считается EOF.
 - После начала binary body PHP больше не дописывает JSON ошибки в
-  image/video-response.
+  image/video-response, включая fatal shutdown handler.
+- Временные `dl_*` регистрируются в request-local cleanup на shutdown.
+  Общий cache contract вынесен в
+  [`media_cache.php`](../telegram_service/media_cache.php): writers публикуют
+  payload и sidecar атомарно, а readers `downloadMedia`, `ensure`, `pub` и
+  prefetch используют одну проверку готовности.
+- `HEAD` для Telegram cache игнорирует `Range` и описывает полное
+  представление без body.
 
 ## Подтверждённые факты
 
