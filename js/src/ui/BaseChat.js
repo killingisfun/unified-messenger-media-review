@@ -7,12 +7,12 @@ import { ReactionActors } from './chat/ReactionActors.js?v=20261004-perf-r1';
 import { ChatReactions } from './chat/ChatReactions.js?v=20261004-perf-r1';
 import { MediaGallery } from './chat/MediaGallery.js?v=20261009-download-names-r1';
 import { MediaUrls } from './chat/MediaUrls.js?v=20261001-static-sticker-r5';
-import { MessageRenderer } from './chat/MessageRenderer.js?v=20261009-vk-private-video-r4';
-import { ChatOutbox } from './chat/ChatOutbox.js?v=20260923-telegram-delete-r11';
-import { ChatAlbums } from './chat/ChatAlbums.js?v=20260923-telegram-delete-r11';
+import { MessageRenderer } from './chat/MessageRenderer.js?v=20261009-document-batch-r1';
+import { ChatOutbox } from './chat/ChatOutbox.js?v=20261009-document-batch-r1';
+import { ChatAlbums } from './chat/ChatAlbums.js?v=20261009-document-batch-r1';
 import { ChatHistory } from './chat/ChatHistory.js?v=20261004-perf-r1';
 import { MessageReceipts } from './chat/MessageReceipts.js?v=20260923-telegram-delete-r11';
-import { ChatComposer } from './chat/ChatComposer.js?v=20260923-telegram-delete-r11';
+import { ChatComposer } from './chat/ChatComposer.js?v=20261009-attachment-compose-r1';
 import { MediaLoader } from './chat/MediaLoader.js?v=20261007-media-terminal-r1';
 import { ChatProfile } from './chat/ChatProfile.js?v=20261003-avatar-cache-r17';
 import { SendJournal } from './chat/SendJournal.js?v=20260923-telegram-delete-r11';
@@ -89,6 +89,8 @@ if (titleHost) {
     this._listenersBound = false;
     this._clipboardFile = null;
     this._stagedFiles = [];
+    this._attachmentSendAsFile = false;
+    this._attachmentDialogState = null;
     this._attachmentPreviewUrls = new Set();
     this._boundHandleSendMessage = null;
     this._boundHandleAttachmentChange = null;
@@ -544,6 +546,7 @@ if (titleHost) {
   _sortHistoryMessages(...args) { return this.chatHistory._sortHistoryMessages(...args); }
   _isWhatsAppPhotoAlbumMember(...args) { return this.chatAlbums._isWhatsAppPhotoAlbumMember(...args); }
   _collapseWhatsAppPhotoAlbums(...args) { return this.chatAlbums._collapseWhatsAppPhotoAlbums(...args); }
+  _collapseLocalOutgoingDocumentBatches(...args) { return this.chatAlbums._collapseLocalOutgoingDocumentBatches(...args); }
   _splitNewestHistoryPage(...args) { return this.chatHistory._splitNewestHistoryPage(...args); }
   _stashHistoryOverflow(...args) { return this.chatHistory._stashHistoryOverflow(...args); }
   _takeBufferedHistoryPage(...args) { return this.chatHistory._takeBufferedHistoryPage(...args); }
@@ -564,6 +567,7 @@ if (titleHost) {
   _applyReceiptIcon(...args) { return this.messageReceipts._applyReceiptIcon(...args); }
   _consumeOptimisticMessage(...args) { return this.chatOutbox._consumeOptimisticMessage(...args); }
   _batchExpectedIds(...args) { return this.chatOutbox._batchExpectedIds(...args); }
+  _registerBatchExpectedId(...args) { return this.chatOutbox._registerBatchExpectedId(...args); }
   _markBatchReceipt(...args) { return this.chatOutbox._markBatchReceipt(...args); }
   _bindBatchOptimisticMessage(...args) { return this.chatOutbox._bindBatchOptimisticMessage(...args); }
   _completeBatchReconciliation(...args) { return this.chatOutbox._completeBatchReconciliation(...args); }

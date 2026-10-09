@@ -301,7 +301,11 @@ function hasOwn(raw, field) {
   return Boolean(raw && Object.prototype.hasOwnProperty.call(raw, field));
 }
 
-/** Distinguish an explicit cleared text from a partial event with no text. */
+/**
+ * `text: ''` is meaningful for an edit which cleared a message.  Conversely,
+ * a receipt/reaction event usually has no text field at all.  Keep those two
+ * cases separate even after a transport payload was normalized once already.
+ */
 export function hasKnownText(raw = {}) {
   if (typeof raw?.textKnown === 'boolean') return raw.textKnown;
   if (hasOwn(raw, 'text') || hasOwn(raw, 'message') || hasOwn(raw, 'body') || hasOwn(raw, 'message_text')) return true;
@@ -384,8 +388,13 @@ export function mergeMessageUpdate(source, previous = {}, patch = {}) {
   const incoming = normalizeMessage(source, patch);
   const overlay = { ...patch };
   if (incomingHasText) {
+    // `before` also carries canonical `text`.  Promote the incoming alias
+    // (notably WPP's message_text) so that it wins over that older field.
     overlay.text = incoming.text;
   } else {
+    // A previously normalized receipt carries a render-safe `text: ''` even
+    // though its original provider event omitted text.  It must not erase a
+    // history value when it is used as a partial patch.
     delete overlay.text;
     delete overlay.message;
     delete overlay.body;

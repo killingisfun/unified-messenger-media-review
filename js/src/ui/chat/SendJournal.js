@@ -160,9 +160,12 @@ export class SendJournal {
     const accepted = components.filter(item => item.status === 'accepted').length;
     const rejected = components.filter(item => item.status === 'rejected');
     const unknown = components.filter(item => item.status === 'unknown' || item.status === 'pending');
+    const isBatch = components.length > 1 || components.some(item => item?.kind === 'album');
     const title = document.createElement('strong');
     title.className = 'send-operation-outcome__title';
-    title.textContent = accepted ? 'Пачка отправлена частично' : (unknown.length ? 'Результат отправки не подтверждён' : 'Пачка не отправлена');
+    title.textContent = isBatch
+      ? (accepted ? 'Пачка отправлена частично' : (unknown.length ? 'Результат отправки не подтверждён' : 'Пачка не отправлена'))
+      : (unknown.length ? 'Результат отправки не подтверждён' : 'Вложение не отправлено');
     progress.appendChild(title);
     const summary = document.createElement('span');
     summary.className = 'send-operation-outcome__summary';

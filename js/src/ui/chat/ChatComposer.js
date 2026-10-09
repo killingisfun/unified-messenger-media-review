@@ -2,6 +2,23 @@ import { normalizeMessage, validateAttachmentSelection } from '../../domain/prov
 import { renderComposerReply } from '../components/MessageQuote.js';
 
 /** Drafts, staged files, quotes and DOM input event bindings. */
+function stabilizeAttachmentFile(file) {
+  if (!file || typeof Blob === 'undefined' || !(file instanceof Blob) || typeof file.slice !== 'function') return file;
+  const size = Number(file.size || 0);
+  if (!Number.isFinite(size) || size <= 0) return file;
+  try {
+    // WebView2 can detach a File obtained from <input type=file> when the
+    // input is cleared.  A sliced Blob owns the selected bytes independently
+    // of that DOM element; keep the original display metadata as well.
+    const stable = file.slice(0, size, file.type || 'application/octet-stream');
+    try { if (file.name) Object.defineProperty(stable, 'name', { value: String(file.name), configurable: true }); } catch {}
+    try { if (file.lastModified) Object.defineProperty(stable, 'lastModified', { value: Number(file.lastModified), configurable: true }); } catch {}
+    return stable;
+  } catch {
+    return file;
+  }
+}
+
 export class ChatComposer {
   constructor(chat) { this.chat = chat; }
 
@@ -90,7 +107,7 @@ export class ChatComposer {
   }
 
   _stageFiles(files) {
-    const next = Array.from(files || []).filter(Boolean);
+    const next = Array.from(files || []).filter(Boolean).map(stabilizeAttachmentFile);
     if (!next.length) return;
     const state = validateAttachmentSelection(this.chat.source, next, this.chat.providerCapabilities, { chat_id: this.chat.chatId });
     if (!state.enabled) {
@@ -102,6 +119,120 @@ export class ChatComposer {
     if (this.chat.attachmentInput) this.chat.attachmentInput.value = '';
     this.chat.showAttachmentPreview(next);
     this.chat.saveComposerDraft();
+  }
+
+  _attachmentDialogTitle(files) {
+    const images = files.filter((file) => String(file?.type || '').startsWith('image/')).length;
+    if (images === files.length) return images === 1 ? 'Отправить изображение' : `Отправить ${images} изображения`;
+    return files.length === 1 ? 'Отправить файл' : `Отправить ${files.length} файла`;
+  }
+
+  _supportsSendAsFile() {
+    // Do not expose a switch which a provider silently ignores. The shared
+    // dialog remains the same in every chat; adapters opt in only after their
+    // document transport is implemented and covered by a contract.
+    return ['telegram', 'max'].includes(String(this.chat.source || '').toLowerCase());
+  }
+
+  _closeAttachmentDialog({ keepDraft = true } = {}) {
+    const state = this.chat._attachmentDialogState;
+    if (!state) return;
+    for (const url of state.urls || []) { try { URL.revokeObjectURL(url); } catch {} }
+    state.root?.remove?.();
+    this.chat._attachmentDialogState = null;
+    if (!keepDraft && this.chat.attachmentInput) this.chat.attachmentInput.value = '';
+  }
+
+  _openAttachmentDialog(files, { append = false, captionOverride = null, asFileOverride = null } = {}) {
+    const picked = Array.from(files || []).filter(Boolean).map(stabilizeAttachmentFile);
+    const previous = append ? (this.chat._attachmentDialogState?.files || []) : [];
+    const selected = [...previous, ...picked];
+    if (!selected.length) return;
+    const allowed = validateAttachmentSelection(this.chat.source, selected, this.chat.providerCapabilities, { chat_id: this.chat.chatId });
+    if (!allowed.enabled) { this.chat._showFeatureNotice(allowed.reason || 'Эти вложения недоступны в текущем чате.'); return; }
+    const caption = captionOverride === null
+      ? (append ? String(this.chat._attachmentDialogState?.caption?.value || '') : String(this.chat.messageInput?.value || ''))
+      : String(captionOverride);
+    const asFile = asFileOverride === null
+      ? (append ? Boolean(this.chat._attachmentDialogState?.asFile?.checked) : false)
+      : Boolean(asFileOverride);
+    this._closeAttachmentDialog();
+    // The picked File belongs to WebView's input. The stabilized Blob above
+    // owns its bytes, so resetting the picker is safe and permits reselecting
+    // the same file through «Добавить».
+    if (this.chat.attachmentInput) this.chat.attachmentInput.value = '';
+
+    const root = document.createElement('section');
+    root.className = 'attachment-compose-overlay';
+    root.tabIndex = -1;
+    root.setAttribute('role', 'dialog'); root.setAttribute('aria-modal', 'true'); root.setAttribute('aria-label', this._attachmentDialogTitle(selected));
+    const panel = document.createElement('div'); panel.className = 'attachment-compose';
+    const header = document.createElement('header'); header.className = 'attachment-compose__heading';
+    const title = document.createElement('h2'); title.textContent = this._attachmentDialogTitle(selected);
+    const close = document.createElement('button'); close.type = 'button'; close.className = 'attachment-compose__close'; close.setAttribute('aria-label', 'Закрыть'); close.innerHTML = '<i class="bi bi-x-lg" aria-hidden="true"></i>';
+    header.append(title, close);
+    const preview = document.createElement('div'); preview.className = 'attachment-compose__preview';
+    const urls = new Set();
+    selected.forEach((file, index) => {
+      const tile = document.createElement('figure'); tile.className = 'attachment-compose__tile';
+      if (String(file?.type || '').startsWith('image/') && typeof URL?.createObjectURL === 'function') {
+        const image = document.createElement('img'); image.alt = file.name || `Изображение ${index + 1}`; image.decoding = 'async';
+        const url = URL.createObjectURL(file); urls.add(url); image.src = url; tile.appendChild(image);
+      } else {
+        const icon = document.createElement('span'); icon.className = 'attachment-compose__file-icon'; icon.innerHTML = '<i class="bi bi-file-earmark" aria-hidden="true"></i>'; tile.appendChild(icon);
+      }
+      const name = document.createElement('figcaption'); name.textContent = file.name || 'Вложение'; tile.appendChild(name);
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'attachment-compose__remove'; remove.setAttribute('aria-label', `Убрать ${file.name || 'вложение'}`); remove.innerHTML = '<i class="bi bi-x" aria-hidden="true"></i>';
+      remove.addEventListener('click', () => {
+        const rest = selected.filter((_, itemIndex) => itemIndex !== index);
+        // Rebuilding the modal revokes its preview URLs. Preserve the edits
+        // made so far rather than quietly clearing its caption or mode.
+        if (rest.length) this._openAttachmentDialog(rest, {
+          captionOverride: captionInput.value,
+          asFileOverride: modeInput.checked,
+        });
+        else this._closeAttachmentDialog({ keepDraft: false });
+      });
+      tile.appendChild(remove); preview.appendChild(tile);
+    });
+    const hasImages = selected.some((file) => String(file?.type || '').startsWith('image/'));
+    const supportsSendAsFile = this._supportsSendAsFile();
+    const mode = document.createElement('label'); mode.className = 'attachment-compose__mode';
+    const modeInput = document.createElement('input'); modeInput.type = 'checkbox'; modeInput.checked = supportsSendAsFile && asFile; modeInput.disabled = !hasImages || !supportsSendAsFile;
+    const modeText = document.createElement('span'); modeText.textContent = 'Отправить как файл';
+    const modeHint = document.createElement('small');
+    modeHint.textContent = !hasImages
+      ? 'Для выбранного типа это уже обычный файл.'
+      : (supportsSendAsFile
+        ? 'Изображение сохранит исходный файл и не будет сжато.'
+        : 'Этот адаптер пока не умеет надёжно выбрать режим документа.');
+    mode.append(modeInput, modeText, modeHint);
+    const captionField = document.createElement('label'); captionField.className = 'attachment-compose__caption';
+    const captionLabel = document.createElement('span'); captionLabel.textContent = 'Подпись';
+    const captionInput = document.createElement('textarea'); captionInput.rows = 2; captionInput.placeholder = 'Добавить подпись'; captionInput.value = caption;
+    captionField.append(captionLabel, captionInput);
+    const actions = document.createElement('footer'); actions.className = 'attachment-compose__actions';
+    const add = document.createElement('button'); add.type = 'button'; add.className = 'attachment-compose__secondary'; add.textContent = 'Добавить';
+    const cancel = document.createElement('button'); cancel.type = 'button'; cancel.className = 'attachment-compose__secondary'; cancel.textContent = 'Отмена';
+    const send = document.createElement('button'); send.type = 'button'; send.className = 'attachment-compose__send'; send.textContent = 'Отправить';
+    add.addEventListener('click', () => this.chat.attachmentInput?.click());
+    const dismiss = () => this._closeAttachmentDialog({ keepDraft: false });
+    cancel.addEventListener('click', dismiss); close.addEventListener('click', dismiss);
+    root.addEventListener('click', (event) => { if (event.target === root) dismiss(); });
+    root.addEventListener('keydown', (event) => { if (event.key === 'Escape') { event.preventDefault(); dismiss(); } });
+    send.addEventListener('click', () => {
+      this.chat._attachmentSendAsFile = Boolean(modeInput.checked);
+      if (this.chat.messageInput) {
+        this.chat.messageInput.value = captionInput.value;
+        this.chat.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      this._closeAttachmentDialog();
+      this._stageFiles(selected);
+      void this.chat.handleSendMessage();
+    });
+    actions.append(add, cancel, send); panel.append(header, preview, mode, captionField, actions); root.append(panel); document.body.append(root);
+    this.chat._attachmentDialogState = { root, files: selected, urls, caption: captionInput, asFile: modeInput };
+    requestAnimationFrame(() => captionInput.focus());
   }
 
   showAttachmentPreview(file) {
@@ -151,7 +282,7 @@ export class ChatComposer {
         if (item.kind === 'file' && item.type && item.type.startsWith('image/')) {
           const file = item.getAsFile(); if (!file) continue;
           if (!file.name) { try { Object.defineProperty(file, 'name', { value: 'pasted-image.png' }); } catch {} }
-          this.chat._stageFiles([file]); e.preventDefault(); e.stopPropagation(); return;
+          this._openAttachmentDialog([file]); e.preventDefault(); e.stopPropagation(); return;
         }
       }
     } catch (err) { console.warn('[BaseChat] handlePaste failed', err); }
@@ -228,7 +359,7 @@ export class ChatComposer {
     };
     this.chat._boundHandleAttachmentChange = () => {
       const files = Array.from(this.chat.attachmentInput?.files || []);
-      if (files.length) this.chat._stageFiles(files);
+      if (files.length) this._openAttachmentDialog(files, { append: Boolean(this.chat._attachmentDialogState) });
     };
     this.chat._boundComposerDraftInput = () => this.chat.saveComposerDraft();
     this.chat._boundAttachmentPreviewClick = (event) => {
@@ -352,6 +483,7 @@ export class ChatComposer {
       this.chat._stagedFiles = []; this.chat._clearAttachmentPreview(); this.chat._clipboardFile = null;
     }
     if (this.chat.attachmentInput) this.chat.attachmentInput.value = '';
+    this.chat._attachmentSendAsFile = false;
     this.chat.saveComposerDraft();
   }
 }

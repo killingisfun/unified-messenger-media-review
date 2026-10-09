@@ -1,5 +1,5 @@
 import { originalAvatar, chatAvatar, setHeaderAvatar } from '../ui/avatar.js';
-import { createChatBySource } from '../ui/services/index.js?v=20261004-chat-zip-r3';
+import { createChatBySource } from '../ui/services/index.js?v=20261009-attachment-compose-r2';
 import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
 import { writeScopedSelfProfile } from '../core/selfProfileCache.js';
 

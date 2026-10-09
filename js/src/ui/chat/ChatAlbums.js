@@ -239,6 +239,101 @@ export class ChatAlbums {
     return result;
   }
 
+  _localOutgoingDocumentBatches() {
+    const membership = new Map();
+    let operations = [];
+    try { operations = this.chat._readOutgoingOperations?.() || []; } catch { return membership; }
+    for (const operation of operations) {
+      // The journal is account-scoped.  Never let a previous Telegram/MAX
+      // account teach this chat how to combine its history.
+      if (!this.chat._operationMatchesCurrentChat(operation)) continue;
+      const files = (Array.isArray(operation.components) ? operation.components : [])
+        .filter(component => String(component?.kind || '') === 'file');
+      if (files.length < 2 || files.some(component => String(component?.status || '') !== 'accepted')) continue;
+      const ids = files.map(component => String(component?.messageId || '').trim());
+      if (ids.some(id => !id) || new Set(ids).size !== ids.length || ids.some(id => membership.has(id))) continue;
+      const requestId = String(operation.requestId || '').trim();
+      if (!requestId) continue;
+      const groupId = `local-document-batch:${requestId}`;
+      const record = { groupId, ids };
+      ids.forEach(id => membership.set(id, record));
+    }
+    return membership;
+  }
+
+  _collapseLocalOutgoingDocumentBatches(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return messages || [];
+    const membership = this._localOutgoingDocumentBatches();
+    if (!membership.size) return messages;
+
+    // Add a synthetic group only to rows whose exact native ID belongs to a
+    // fully confirmed local file operation.  This is intentionally not a
+    // time-window rule: separate documents sent close together must remain
+    // separate, while one slow multi-file upload remains one card after a
+    // page refresh.
+    const annotated = messages.map((message) => {
+      const id = this.chat._historyMessageId(message);
+      const local = membership.get(id);
+      if (!local || String(message?.direction) !== 'out') return message;
+      const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+      if (!attachments.some(attachment => this.chat._isDocumentAttachment(attachment))) return message;
+      const nativeGroup = String(message?.groupId ?? message?.media_group_id ?? message?.group_id ?? '').trim();
+      if (nativeGroup) return message;
+      return {
+        ...message,
+        groupId: local.groupId,
+        group_id: local.groupId,
+        media_group_id: local.groupId,
+        _localDocumentBatch: true,
+      };
+    });
+
+    const sorted = this.chat._sortHistoryMessages(annotated);
+    const result = [];
+    for (let index = 0; index < sorted.length;) {
+      const first = sorted[index];
+      const groupId = String(first?.media_group_id || first?.group_id || first?.groupId || '');
+      if (!groupId.startsWith('local-document-batch:')) {
+        result.push(first);
+        index++;
+        continue;
+      }
+      const group = [first];
+      let next = index + 1;
+      while (next < sorted.length) {
+        const candidate = sorted[next];
+        const candidateGroup = String(candidate?.media_group_id || candidate?.group_id || candidate?.groupId || '');
+        if (candidateGroup !== groupId) break;
+        group.push(candidate);
+        next++;
+      }
+      const expected = membership.get(this.chat._historyMessageId(first))?.ids || [];
+      const actual = group.map(message => this.chat._historyMessageId(message));
+      // A history page must contain every member before it becomes one card.
+      // This prevents a partial page from falsely implying the batch is
+      // complete; the next page will make the exact aggregate on its own.
+      if (expected.length > 1 && expected.length === actual.length
+        && expected.every(id => actual.includes(id))) {
+        const last = group[group.length - 1];
+        result.push({
+          ...last,
+          text: group.map(message => String(message?.text || '').trim()).find(Boolean) || '',
+          attachments: group.flatMap(message => Array.isArray(message?.attachments) ? message.attachments : []),
+          groupId,
+          group_id: groupId,
+          media_group_id: groupId,
+          _albumMessageIds: actual,
+          _albumMessages: group,
+          _localDocumentBatch: true,
+        });
+      } else {
+        result.push(...group);
+      }
+      index = next;
+    }
+    return result;
+  }
+
   normalizeMediaGroups() {
     const container = this.chat.messagesContainer;
     if (!container) return;

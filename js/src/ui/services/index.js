@@ -1,6 +1,6 @@
-import { BaseChat } from '../BaseChat.js?v=20261009-capability-refresh-r1';
-import { WhatsappChat } from '../WhatsappChat.js?v=20261004-chat-zip-r3';
-import { TelegramChat } from './TelegramChat.js?v=20261004-chat-zip-r3';
+import { BaseChat } from '../BaseChat.js?v=20261009-document-batch-r1';
+import { WhatsappChat } from '../WhatsappChat.js?v=20261009-attachment-compose-r2';
+import { TelegramChat } from './TelegramChat.js?v=20261009-attachment-compose-r2';
 import { VKChat } from './VKChat.js?v=20261004-chat-zip-r3';
 import { AvitoChat } from './AvitoChat.js?v=20261004-chat-zip-r3';
 

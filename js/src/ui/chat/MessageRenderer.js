@@ -746,6 +746,10 @@ export class MessageRenderer {
     // WhatsApp keeps the native album id on every photo. Build that exact
     // server group before it touches the DOM: inserting the children and
     // replacing them with a grid one frame later visibly shakes the chat.
+    // Documents sent as one user-selected batch have distinct native IDs on
+    // some providers.  Recover their exact persisted operation before the
+    // generic provider album logic so reopening a chat keeps one file card.
+    messages = this.chat._collapseLocalOutgoingDocumentBatches(messages);
     messages = this.chat._collapseWhatsAppPhotoAlbums(messages);
     const frag = document.createDocumentFragment();
     let addedCount = 0;

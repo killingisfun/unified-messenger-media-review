@@ -110,6 +110,18 @@ export class ChatOutbox {
       return true;
     }
 
+    // A provider row can arrive while the send request is still awaiting its
+    // response. Once that response binds this exact id, consume the local
+    // bubble by identity, never by file name, text or timestamp.
+    const acceptedEl = Array.from(this.chat.messagesContainer.querySelectorAll('.message.out.optimistic[data-accepted-message-id]'))
+      .find((element) => String(element.dataset.acceptedMessageId || '') === realId);
+    if (acceptedEl) {
+      const active = this.chat._morphOptimisticMessage(acceptedEl, realMessage) || acceptedEl;
+      this.chat.renderedMessageIds.add(realId);
+      this.chat._scheduleOutgoingReconciliation(active, false);
+      return true;
+    }
+
     // A temporary bubble becomes a real message only when the send response
     // already bound this exact native ID (or when a batch exposed exact IDs).
     // Text, timestamp and MIME are not identities: using them can replace an
@@ -117,9 +129,32 @@ export class ChatOutbox {
     return false;
   }
 
+  _findRenderedNativeMessage(nativeId, exclude = null) {
+    const wanted = String(nativeId || '').trim();
+    if (!wanted || !this.chat.messagesContainer) return null;
+    for (const node of this.chat.messagesContainer.querySelectorAll('.message')) {
+      if (node === exclude) continue;
+      if (String(node.dataset?.id || '') === wanted || String(node.id || '') === `message-${wanted}`) return node;
+      const records = node._groupMessages || (node._originalData ? [node._originalData] : []);
+      if (records.some((message) => String(message?.id || message?.message_id || '') === wanted)) return node;
+    }
+    return null;
+  }
+
   _batchExpectedIds(element) {
     return String(element?.dataset?.expectedMessageIds || '')
       .split(',').map(id => id.trim()).filter(Boolean);
+  }
+
+  _registerBatchExpectedId(element, messageId, total) {
+    if (!element?.isConnected || !messageId) return;
+    const id = String(messageId).trim();
+    if (!id) return;
+    element.dataset.sendBatch = '1';
+    element.dataset.batchTotal = String(total || element.dataset.batchTotal || 1);
+    element.dataset.expectedMessageIds = [...new Set([...this.chat._batchExpectedIds(element), id])].join(',');
+    this.chat._batchOptimisticByMessageId ??= new Map();
+    this.chat._batchOptimisticByMessageId.set(id, element);
   }
 
   _markBatchReceipt(element, messageId, isRead, ack = 0) {
@@ -166,9 +201,7 @@ export class ChatOutbox {
       .sort((a, b) => Number(a.index || 0) - Number(b.index || 0));
     const ids = results.map(item => String(item.message_id));
     if (!ids.length) return;
-    element.dataset.sendBatch = '1';
-    element.dataset.batchTotal = String(job.total || element.dataset.batchTotal || ids.length);
-    element.dataset.expectedMessageIds = [...new Set([...this.chat._batchExpectedIds(element), ...ids])].join(',');
+    ids.forEach(id => this._registerBatchExpectedId(element, id, job.total || ids.length));
     element._batchMessages ??= new Map();
     this.chat._batchOptimisticByMessageId ??= new Map();
     const expected = new Set(this.chat._batchExpectedIds(element));
@@ -222,15 +255,47 @@ export class ChatOutbox {
     const provider = String(this.chat.source || '').toLowerCase();
     const groupPrefix = provider === 'telegram' ? 'tg-local-batch:' : 'wa-local-batch:';
     const groupId = `${groupPrefix}${element.dataset.sendRequestId || ids[0]}`;
-    for (const id of ids) {
-      const message = { ...element._batchMessages.get(id), media_group_id: groupId, group_id: groupId };
-      this.chat.renderedMessageIds.delete(id);
-      this.chat._batchOptimisticByMessageId?.delete(id);
-      const node = this.chat.renderMessage(message);
-      if (node) { element.before(node); this.chat.observeNewMedia(node); }
+    // Telegram documents (and some WPP document sends) have to travel as
+    // separate provider messages.  They are nevertheless one user action.
+    // Rendering every acknowledged row and asking a later DOM heuristic to
+    // put them back together made the optimistic grouped card visibly split.
+    // Build the same aggregate that history uses, atomically, from the exact
+    // IDs confirmed for this request.  Do not infer a batch from timestamps.
+    const members = ids.map(id => element._batchMessages.get(id));
+    const last = members[members.length - 1];
+    const combined = {
+      ...last,
+      text: members.map(message => String(message?.text || '').trim()).find(Boolean) || '',
+      attachments: members.flatMap(message => Array.isArray(message?.attachments) ? message.attachments : []),
+      media_group_id: groupId,
+      group_id: groupId,
+      _albumMessageIds: ids,
+      _albumMessages: members,
+      _localDocumentBatch: true,
+    };
+    // Each id was deliberately marked handled while it was held against a
+    // realtime duplicate.  Make the renderer accept the canonical row again
+    // for the single aggregate card, then restore every native id below.
+    ids.forEach(id => this.chat.renderedMessageIds.delete(id));
+    const node = this.chat.renderMessage(combined);
+    if (!node) {
+      ids.forEach(id => this.chat.renderedMessageIds.add(id));
+      return;
     }
-    element.remove();
-    this.chat.normalizeMediaGroups();
+    node.dataset.messageIds = ids.join(',');
+    node.dataset.groupKey = `gid:${groupId}`;
+    node.dataset.localDocumentBatch = '1';
+    node._groupMessages = members;
+    ids.forEach(id => {
+      this.chat.renderedMessageIds.add(id);
+      this.chat._batchOptimisticByMessageId?.delete(id);
+    });
+    element.replaceWith(node);
+    this._revokeOptimisticObjectUrls(element);
+    this.chat._registerGroup(node);
+    this.chat._renderGroupReactions(node, this.chat._computeAggregatedReactions(ids));
+    this.chat._pendingMediaRoots?.add(node);
+    this.chat.observeNewMedia(node);
   }
 
   async _waitForSendJob(jobId, onProgress = null) {
@@ -271,6 +336,9 @@ export class ChatOutbox {
     const source = String(this.chat.source || '').trim();
     if (!source || typeof this.chat.api?.getProviderSelfProfile !== 'function') return;
     try {
+      // Provider-only caches are unsafe here: this profile scopes drafts,
+      // unknown sends and MAX realtime cursors. Reuse only a cache entry
+      // already proven to match the expected connected account.
       let profile = readScopedSelfProfile(source, this.chat._outgoingAccountKey);
       if (!profile) {
         const response = await this.chat.api.getProviderSelfProfile(source);
@@ -453,6 +521,29 @@ export class ChatOutbox {
     const nativeId = String(response?.message_id ?? response?.messageId ?? '').trim();
     if (!nativeId || nativeId.length > 512 || /[\x00-\x1f\x7f]/.test(nativeId) || !element?.isConnected) return false;
 
+    // Keep the identity visible until a concurrent history/realtime record
+    // has had a chance to consume this temporary bubble.
+    element.dataset.acceptedMessageId = nativeId;
+
+    // History/realtime may render the provider row before the send HTTP
+    // response returns. In that race the optimistic node must not be morphed
+    // into a second copy; the authoritative row already in the DOM wins.
+    const existing = this._findRenderedNativeMessage(nativeId, element);
+    if (existing) {
+      this._revokeOptimisticObjectUrls(element);
+      element.remove();
+      this.chat.renderedMessageIds.add(nativeId);
+      return true;
+    }
+    // Some grouped/virtualized rows deliberately retain no standalone DOM
+    // element. The id still means the authoritative provider row has already
+    // won, so never morph the local preview into a second visible message.
+    if (this.chat.renderedMessageIds.has(nativeId)) {
+      this._revokeOptimisticObjectUrls(element);
+      element.remove();
+      return true;
+    }
+
     // A native id proves that the provider accepted the operation, but it is
     // not a delivery/read receipt.  Keep a neutral clock for legacy responses
     // that only contain an id.  When the adapter explicitly returns the
@@ -540,7 +631,7 @@ export class ChatOutbox {
   }
 
   async _deliverOutgoingMessage(outbound, element) {
-    const { text, files, replyTargetId, requestId } = outbound;
+    const { text, files, replyTargetId, requestId, attachmentAsFile = false } = outbound;
     if (!this.chat._isActiveInstance()) throw new Error('Чат закрыт до завершения отправки.');
     // This is the first point at which a provider request can start. It is
     // distinct from a local queued composer task and must be reconciled if
@@ -561,6 +652,13 @@ export class ChatOutbox {
       return error;
     };
     const sendOne = async (file = null, index = 0) => {
+      if (file && (!Number.isFinite(Number(file.size)) || Number(file.size) <= 0)) {
+        const error = new Error('Выбранный файл пустой в окне отправки. Выберите его заново.');
+        error.code = 'attachment_empty_client';
+        error.outcome = 'rejected';
+        error.componentIndex = index;
+        throw error;
+      }
       const fd = new FormData();
       fd.append('action', 'send_message');
       fd.append('source', this.chat.source || '');
@@ -570,17 +668,29 @@ export class ChatOutbox {
       if (index === 0 && replyTargetId) fd.append('reply_to_message_id', replyTargetId);
       fd.append('channel_guard', `${this.chat.source}:${this.chat.chatId}:${this.chat.chatDbId}`);
       fd.append('client_request_id', `${requestId}:${index}`);
+      if (attachmentAsFile) fd.append('attachment_as_file', '1');
       if (file) fd.append('attachment', file, file.name || 'attachment');
       return this.chat.api.sendMessage(fd);
     };
 
     let isNativeBatch = false;
+    let useBatchReconciliation = false;
     let lastSingleResult = null;
+    const sequentialResults = [];
     if (files.length) {
       const providerId = String(this.chat.source || '').toLowerCase();
-      const isMaxBundle = providerId === 'max' && files.length > 1;
+      // MAX accepts a photo album as one native message, but its provider API
+      // accepts documents only one by one. A checked "send as file" therefore
+      // deliberately uses the normal sequenced path instead of pretending a
+      // document bundle is a supported album.
+      const isMaxBundle = providerId === 'max' && files.length > 1 && !attachmentAsFile;
+      // Telegram's sendMultiMedia accepts an album of media, not a bundle of
+      // documents. "Send as file" must therefore use independent confirmed
+      // document sends, just like MAX, rather than receiving a 500 after all
+      // bytes have already been staged server-side.
       isNativeBatch = ['whatsapp', 'telegram'].includes(providerId)
         && files.length > 1
+        && !attachmentAsFile
         && typeof this.chat.api.sendMessageBatch === 'function';
       if (isMaxBundle) {
         const fd = new FormData();
@@ -592,6 +702,7 @@ export class ChatOutbox {
         if (replyTargetId) fd.append('reply_to_message_id', replyTargetId);
         fd.append('channel_guard', `${this.chat.source}:${this.chat.chatId}:${this.chat.chatDbId}`);
         fd.append('client_request_id', requestId);
+        if (attachmentAsFile) fd.append('attachment_as_file', '1');
         files.forEach(file => fd.append('attachments[]', file, file.name || 'attachment'));
         this.chat._markOptimisticStatus(element);
         const result = await this.chat.api.sendMessage(fd);
@@ -599,6 +710,7 @@ export class ChatOutbox {
         lastSingleResult = result;
         this.chat._rememberAcceptedSendEvidence(element, result, requestId, 'accepted', 0);
       } else if (isNativeBatch) {
+        useBatchReconciliation = true;
         const fd = new FormData();
         fd.append('action', 'send_message_batch');
         fd.append('source', this.chat.source || '');
@@ -608,6 +720,7 @@ export class ChatOutbox {
         if (replyTargetId) fd.append('reply_to_message_id', replyTargetId);
         fd.append('channel_guard', `${this.chat.source}:${this.chat.chatId}:${this.chat.chatDbId}`);
         fd.append('client_request_id', requestId);
+        if (attachmentAsFile) fd.append('attachment_as_file', '1');
         files.forEach(file => fd.append('attachments[]', file, file.name || 'attachment'));
         this.chat._markOptimisticStatus(element);
         const batch = await this.chat.api.sendMessageBatch(fd);
@@ -673,7 +786,26 @@ export class ChatOutbox {
             }, `Не удалось отправить файл ${index + 1}/${files.length}`);
           }
           lastSingleResult = result;
+          const nativeId = String(result?.message_id || result?.messageId || '').trim();
+          if (nativeId) {
+            sequentialResults.push({ index, success: true, status: 'accepted', message_id: nativeId });
+            // Register each exact ID before the next sequential provider call.
+            // Telegram can publish its realtime event before the HTTP response
+            // for the whole selection returns; without this barrier the event
+            // is rendered as a second photo/document bubble.
+            if (files.length > 1) this._registerBatchExpectedId(element, nativeId, files.length);
+          }
           this.chat._rememberAcceptedSendEvidence(element, result, requestId, 'accepted', index);
+        }
+        // Several independently sent documents still began as one local
+        // preview. Reconcile that preview by the exact IDs of every accepted
+        // component; never morph it into only the final file or duplicate the
+        // earlier ones when their realtime/history rows arrive.
+        if (files.length > 1 && sequentialResults.length === files.length) {
+          this.chat._bindBatchOptimisticMessage(element, {
+            status: 'completed', total: files.length, result: sequentialResults,
+          });
+          useBatchReconciliation = true;
         }
       }
     } else {
@@ -685,7 +817,7 @@ export class ChatOutbox {
       this.chat._rememberAcceptedSendEvidence(element, result, requestId, 'accepted', 0);
     }
 
-    if (!isNativeBatch) {
+    if (!useBatchReconciliation) {
       this.chat._rememberAcceptedSendEvidence(element, lastSingleResult, requestId);
       if (!this.chat._bindOutgoingProviderMessageId(element, lastSingleResult)) {
         this.chat._markOptimisticAwaitingConfirmation(element);
@@ -707,6 +839,7 @@ export class ChatOutbox {
     }
     const text = (this.chat.messageInput?.value || '').trim();
     const files = Array.from(this.chat._stagedFiles?.length ? this.chat._stagedFiles : (this.chat._clipboardFile ? [this.chat._clipboardFile] : this.chat.attachmentInput?.files || []));
+    const attachmentAsFile = Boolean(this.chat._attachmentSendAsFile);
     const replyTargetId = this.chat._replyContext?.id ? String(this.chat._replyContext.id) : '';
     if (!text && !files.length) return Promise.resolve(false);
     if (files.length) {
@@ -740,8 +873,8 @@ export class ChatOutbox {
       attachments: files.map(file => {
         const url = (typeof URL !== 'undefined' && URL.createObjectURL) ? URL.createObjectURL(file) : '';
         const mime = file.type || '';
-        const type = mime.startsWith('image/') ? 'photo' : (mime.startsWith('video/') ? 'video' : (mime.startsWith('audio/') ? 'audio' : 'file'));
-        return { type, url, public_url: url, title: file.name || 'attachment', filename: file.name || 'attachment', mime };
+        const type = attachmentAsFile ? 'file' : (mime.startsWith('image/') ? 'photo' : (mime.startsWith('video/') ? 'video' : (mime.startsWith('audio/') ? 'audio' : 'file')));
+        return { type, source_type: attachmentAsFile ? 'document' : 'media', url, public_url: url, title: file.name || 'attachment', filename: file.name || 'attachment', mime };
       }),
       is_read: false,
       replyTo: replyContext,
@@ -780,7 +913,7 @@ export class ChatOutbox {
     }
     if (!replyContext || this.chat._replyContext?.id === replyContext.id) this.chat.clearReplyContext();
 
-    const outbound = { text, files, replyTargetId, requestId };
+    const outbound = { text, files, replyTargetId, requestId, attachmentAsFile };
     this.chat._pendingSendCount += 1;
     this.chat._updateSendQueueState();
     const task = this.chat._sendQueue.then(

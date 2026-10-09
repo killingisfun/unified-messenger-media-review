@@ -71,7 +71,7 @@ $uiExposeProviderConfig = !$uiPreview && !$uiBridgeMode;
     <link rel="stylesheet" href="js/src/ui/styles/legacy-media-shell.css?v=20261009-profile-avatar-fallback-r1">
     <link rel="stylesheet" href="js/src/ui/styles/albums.css?v=20260923-whatsapp-avatars-r10">
     <!-- Visual panel layer selectively transferred from worktree 45fc. -->
-    <link rel="stylesheet" href="js/src/ui/styles/messenger.css?v=20260923-logout-r1">
+    <link rel="stylesheet" href="js/src/ui/styles/messenger.css?v=20261009-attachment-compose-r1">
     <link rel="stylesheet" href="js/src/ui/styles/message-actions.css?v=20260914-settings">
     <link rel="stylesheet" href="js/src/ui/styles/ai.css?v=20260924-audit-r14">
 
@@ -318,7 +318,7 @@ $uiExposeProviderConfig = !$uiPreview && !$uiBridgeMode;
 
     <!-- ======== Скрипты ======== -->
     <script src="js/vendor/bootstrap/js/bootstrap.bundle.min.js?v=5.3.2"></script>
-<script type="module" src="js/src/app/index.js?v=20261009-profile-avatar-fallback-r1"></script>
+<script type="module" src="js/src/app/index.js?v=20261009-attachment-compose-r2"></script>
 
    
 </body>
