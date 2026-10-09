@@ -734,33 +734,118 @@ export class MediaLoader {
     }
   }
 
-  async _renewBridgeMediaUrl(rawUrl) {
-    if (!this.chat._isCompatibilityBridge() || !rawUrl) return { url: rawUrl };
+  _mediaRefreshScope(el) {
+    return el?.closest?.('.media-holder, .album-tile, .message-sticker, .attachment-card') || el?.parentElement || null;
+  }
+
+  _replaceMediaRefUrl(rawUrl, oldUrl, newUrl) {
+    if (!rawUrl) return rawUrl;
+    try {
+      const current = new URL(rawUrl, window.location.href);
+      const previous = new URL(oldUrl, window.location.href);
+      const replacement = new URL(newUrl, window.location.href);
+      if (current.pathname !== previous.pathname || current.searchParams.get('ref') !== previous.searchParams.get('ref')) return rawUrl;
+      for (const key of ['dl', 'name']) {
+        const value = current.searchParams.get(key);
+        if (value !== null) replacement.searchParams.set(key, value);
+      }
+      return replacement.toString();
+    } catch {
+      return rawUrl;
+    }
+  }
+
+  _replaceAttachedMediaUrls(el, oldUrl, newUrl) {
+    const scope = this._mediaRefreshScope(el);
+    if (!scope) return;
+    const attributes = ['href', 'src', 'data-lazy-src', 'data-fallback-src', 'data-download-url'];
+    scope.querySelectorAll('*').forEach(node => {
+      for (const attribute of attributes) {
+        if (!node.hasAttribute?.(attribute)) continue;
+        const current = node.getAttribute(attribute) || '';
+        const replacement = this._replaceMediaRefUrl(current, oldUrl, newUrl);
+        if (replacement !== current) node.setAttribute(attribute, replacement);
+      }
+      if (node.hasAttribute?.('data-title')) {
+        const title = node.getAttribute('data-title') || '';
+        try {
+          const oldRef = new URL(oldUrl, window.location.href).searchParams.get('ref') || '';
+          const newRef = new URL(newUrl, window.location.href).searchParams.get('ref') || '';
+          if (oldRef && newRef && title.includes(oldRef)) node.setAttribute('data-title', title.split(oldRef).join(newRef));
+        } catch {}
+      }
+    });
+  }
+
+  _maxMediaRefreshIdentity(el) {
+    const scope = this._mediaRefreshScope(el);
+    if (!scope) return null;
+    const chatId = String(scope.dataset.mediaRefreshChatId || '');
+    const messageId = String(scope.dataset.mediaRefreshMessageId || '');
+    const accountId = String(scope.dataset.mediaRefreshAccountId || '');
+    const index = String(scope.dataset.mediaRefreshIndex || '');
+    return /^-?[0-9]{1,20}$/.test(chatId) && /^[1-9][0-9]{0,19}$/.test(messageId)
+      && /^[1-9][0-9]{0,19}$/.test(accountId) && /^[0-9]{1,2}$/.test(index)
+      ? { chatId, messageId, accountId, index }
+      : null;
+  }
+
+  async _renewBridgeMediaUrl(rawUrl, el, generation) {
+    if (!rawUrl) return { url: rawUrl };
     let current;
     try {
       current = new URL(rawUrl, window.location.href);
-      if (current.pathname !== '/bridge-media') return { url: rawUrl };
-      const ref = current.searchParams.get('ref') || '';
-      if (!/^[a-f0-9]{48}$/.test(ref)) return { url: rawUrl };
-      const endpoint = new URL('/bridge-media-refresh', window.location.href);
-      endpoint.searchParams.set('ref', ref);
-      const response = await fetch(endpoint.toString(), {
-        credentials: 'include',
-        cache: 'no-store',
-      });
+      const bridgeRef = current.pathname === '/bridge-media' ? current.searchParams.get('ref') || '' : '';
+      const maxIdentity = /\/max_api\.php$/i.test(current.pathname)
+        && current.searchParams.get('resource') === 'media' ? this._maxMediaRefreshIdentity(el) : null;
+      if (!this.chat._isCompatibilityBridge() && !maxIdentity) return { url: rawUrl };
+      if (this.chat._isCompatibilityBridge() && !/^[a-f0-9]{48}$/.test(bridgeRef)) return { url: rawUrl };
+      const endpoint = maxIdentity
+        ? new URL('max_api.php', window.location.href)
+        : new URL('/bridge-media-refresh', window.location.href);
+      if (maxIdentity) {
+        endpoint.searchParams.set('resource', 'media_ref');
+        endpoint.searchParams.set('chat_id', maxIdentity.chatId);
+        endpoint.searchParams.set('message_id', maxIdentity.messageId);
+        endpoint.searchParams.set('account_id', maxIdentity.accountId);
+        endpoint.searchParams.set('index', maxIdentity.index);
+      } else {
+        endpoint.searchParams.set('ref', bridgeRef);
+      }
+      const abort = new AbortController();
+      const cancelForChat = () => abort.abort('chat-disposed');
+      this.chat.lifetime.add(cancelForChat);
+      let response;
       let payload = null;
-      try { payload = await response.json(); } catch {}
+      try {
+        response = await this.chat.api._asyncFetchRaw(endpoint.toString(), {
+          signal: abort.signal,
+          cache: 'no-store',
+        }, 8000);
+        try { payload = JSON.parse(await response.text()); } catch {}
+      } finally {
+        this.chat.lifetime.remove?.(cancelForChat);
+      }
+      if (!el?.isConnected || !this.chat._isActiveInstance() || el._bc_mediaRefreshGeneration !== generation) return { url: rawUrl, cancelled: true };
+      const renewedUrl = maxIdentity && typeof payload?.media_ref === 'string'
+        ? `max_api.php?resource=media&ref=${encodeURIComponent(payload.media_ref)}`
+        : payload?.url;
       if (response.ok && payload?.success === true && typeof payload.url === 'string') {
-        const renewed = new URL(payload.url, window.location.href);
+        const renewed = new URL(renewedUrl, window.location.href);
         const newRef = renewed.searchParams.get('ref') || '';
-        if (renewed.pathname === '/bridge-media' && /^[a-f0-9]{48}$/.test(newRef) && newRef !== ref) {
+        if (renewed.pathname === '/bridge-media' && /^[a-f0-9]{48}$/.test(newRef) && newRef !== bridgeRef) {
           return { url: renewed.toString(), renewed: true };
         }
+      }
+      if (response.ok && payload?.success === true && maxIdentity && typeof renewedUrl === 'string') {
+        const renewed = new URL(renewedUrl, window.location.href);
+        if (/^[A-Za-z0-9_-]{20,128}$/.test(renewed.searchParams.get('ref') || '')) return { url: renewed.toString(), renewed: true };
       }
       // The bridge knows that this exact opaque reference has expired but has
       // no stable attachment identity (for example an old MAX/CDN token).
       // Do not disguise that state as a network retry of the same dead URL.
-      if (payload?.code === 'media_ref_expired' || payload?.code === 'media_ref_refresh_unavailable') {
+      if (payload?.code === 'media_ref_expired' || payload?.code === 'media_ref_refresh_unavailable'
+        || payload?.code === 'max_media_ref_expired' || payload?.code === 'max_media_ref_account_changed') {
         return { url: rawUrl, unavailable: true };
       }
     } catch {}
@@ -770,6 +855,8 @@ export class MediaLoader {
   async _forceReloadMedia(el) {
     try {
       if (!el) return;
+      const generation = (el._bc_mediaRefreshGeneration || 0) + 1;
+      el._bc_mediaRefreshGeneration = generation;
       const bump = (u) => {
         if (!u) return u;
         const url = new URL(u, window.location.href);
@@ -779,34 +866,36 @@ export class MediaLoader {
       if (el.tagName === 'IMG') {
         let src = el.getAttribute('src') || el.dataset.lazySrc || '';
         src = this.chat._fixMediaUrl(src);
-        const renewal = await this._renewBridgeMediaUrl(src);
+        const renewal = await this._renewBridgeMediaUrl(src, el, generation);
         if (!el.isConnected || !this.chat._isActiveInstance()) return;
+        if (renewal.cancelled) return;
         if (renewal.unavailable) {
           el.dataset.bcBridgeRefreshUnavailable = '1';
           el.dispatchEvent(new Event('error'));
           return;
         }
+        if (renewal.renewed) this._replaceAttachedMediaUrls(el, src, renewal.url);
         src = renewal.url;
         try {
           this.chat._prefetchMediaByUrl(src, el.getAttribute('alt') || 'image.jpg', el);
         } catch {}
         const next = bump(src);
         el.setAttribute('src', next);
-        const link = el.closest('a');
-        if (renewal.renewed && link) link.setAttribute('href', src);
       } else if (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') {
         const s = el.querySelector('source');
         if (s) {
           let src = s.getAttribute('src') || s.dataset.lazySrc || '';
           delete s.dataset.lazySrc;
           src = this.chat._fixMediaUrl(src);
-          const renewal = await this._renewBridgeMediaUrl(src);
+          const renewal = await this._renewBridgeMediaUrl(src, el, generation);
           if (!el.isConnected || !this.chat._isActiveInstance()) return;
+          if (renewal.cancelled) return;
           if (renewal.unavailable) {
             el.dataset.bcBridgeRefreshUnavailable = '1';
             el.dispatchEvent(new Event('error'));
             return;
           }
+          if (renewal.renewed) this._replaceAttachedMediaUrls(el, src, renewal.url);
           src = renewal.url;
           try {
             this.chat._prefetchMediaByUrl(src, 'media.bin', el);

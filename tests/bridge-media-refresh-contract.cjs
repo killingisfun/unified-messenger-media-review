@@ -12,7 +12,7 @@ assert.match(bridge, /\['telegram', 'wa', 'wa_preview', 'local'\]/,
   'only typed stable attachment identities may renew');
 assert.match(bridge, /MAX sidecar tokens[\s\S]*?excluded/,
   'MAX/CDN capabilities are not persisted as renewable upstream URLs');
-assert.match(loader, /async _renewBridgeMediaUrl\(rawUrl\)/,
+assert.match(loader, /async _renewBridgeMediaUrl\(rawUrl, el, generation\)/,
   'the UI asks the bridge for a replacement before retrying media');
 assert.match(loader, /new URL\('\/bridge-media-refresh', window\.location\.href\)/,
   'refresh always goes to the canonical bridge origin, not an arbitrary media worker');

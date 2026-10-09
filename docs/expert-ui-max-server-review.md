@@ -86,6 +86,25 @@ reference. The private bridge fixture checks renewal, replacement identity and
 the MAX no-replay rule. `tests/bridge-media-refresh-contract.cjs` in this
 snapshot checks the browser route and final UI state.
 
+## Direct MAX renewal and slow-download follow-up
+
+The direct desktop route now renews one expired MAX media ref from the bounded
+chat, message, attachment index and account identity that came with the
+history item. The sidecar rejects the request after an account switch. The UI
+uses the shared body-timeout helper, cancels the request when the chat closes,
+and ignores a late result from an older media attempt.
+
+One successful renewal replaces the player source, `data-download-url`, both
+download links, and the lightbox download URL for that attachment. `name` and
+`dl` query parameters stay intact. The MAX read scheduler has no second lock
+outside its queue budget.
+
+Desktop body copies now use a 45-second no-progress timeout and a separate
+20-minute total limit. The same code covers normal downloads and archive
+entries. `tests/media-refresh-followup-contract.cjs` checks these source
+boundaries. It is static coverage; provider media and account switching still
+need an authorised end-to-end run.
+
 ## Deliberate privacy and safety boundaries
 
 - MAX contact cards project only fields MAX has already returned for the

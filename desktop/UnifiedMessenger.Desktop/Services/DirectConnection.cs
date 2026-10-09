@@ -185,12 +185,20 @@ public sealed class DesktopApiClient : IDisposable
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, mediaUri);
             request.Headers.Authorization = AuthenticationHeaderValue.Parse(_connection.AuthorizationValue);
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromMinutes(2));
-            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
+            using var totalDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            totalDeadline.CancelAfter(TimeSpan.FromMinutes(20));
+            using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, totalDeadline.Token);
             response.EnsureSuccessStatusCode();
-            await using var source = await response.Content.ReadAsStreamAsync(timeout.Token);
-            await source.CopyToAsync(destination, 81920, timeout.Token);
+            await using var source = await response.Content.ReadAsStreamAsync(totalDeadline.Token);
+            var buffer = new byte[81920];
+            while (true)
+            {
+                using var idleDeadline = CancellationTokenSource.CreateLinkedTokenSource(totalDeadline.Token);
+                idleDeadline.CancelAfter(TimeSpan.FromSeconds(45));
+                var read = await source.ReadAsync(buffer.AsMemory(), idleDeadline.Token);
+                if (read == 0) return;
+                await destination.WriteAsync(buffer.AsMemory(0, read), totalDeadline.Token);
+            }
         }
         finally { _mediaGate.Release(); }
     }
@@ -210,6 +218,6 @@ public sealed class DesktopApiClient : IDisposable
         "send_reaction", "retry_vk_request", "get_messages_json", "get_new_messages", "get_whatsapp_status",
         "get_updated_chats", "get_local_messages", "mark_chat_read", "send_message_by_target", "send_message_by_phone",
         "delete_chat_universal", "clear_whatsapp_data", "stream_external_media",
-        "telegram_media", "stream_avatar", "max_media", "provider_route",
+        "telegram_media", "stream_avatar", "max_media", "max_media_ref", "provider_route",
     };
 }

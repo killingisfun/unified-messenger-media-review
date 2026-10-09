@@ -493,12 +493,8 @@ class MaxAuthService:
         self.session_name = session_name
         self.runtime = RuntimeState()
         self.lock = asyncio.Lock()
-        self.read_lock = asyncio.Lock()
-        # History is the most expensive MAX read: metadata, page, participant
-        # names and media tokens. Keep one FIFO lane for it, separately from
-        # short profile/list/reaction reads. asyncio.Lock queues waiters, so a
-        # second history request waits instead of opening another RPC.
-        self.history_lock = asyncio.Lock()
+        # One scheduler owns every provider read. History yields to a queued
+        # short read, but it never waits on a second lock outside this budget.
         self._read_schedule = asyncio.Condition()
         self._read_busy = False
         self._short_read_waiters = 0
@@ -617,8 +613,7 @@ class MaxAuthService:
         try:
             chat = next((row for row in (getattr(_client, "chats", None) or []) if getattr(row, "id", None) == chat_id), None)
             if chat is None or direct_peer_id(chat, own) is None:
-                async with self.read_lock:
-                    chat = await asyncio.wait_for(_client.get_chat(chat_id), MAX_READ_TIMEOUT_SECONDS)
+                chat = await self.read(lambda client: client.get_chat(chat_id))
             peer = direct_peer_id(chat, own)
             if peer is None or peer != getattr(event, "user_id", None):
                 return
@@ -668,10 +663,12 @@ class MaxAuthService:
         return client
 
     async def read(self, callback: Any, *, history: bool = False, timeout: float = MAX_READ_TIMEOUT_SECONDS) -> Any:
-        """Serialize provider reads and let short reads pass queued history pages."""
+        """Serialize provider reads with one queue and one operation deadline."""
         client = self.connected_client()
         loop = asyncio.get_running_loop()
-        queue_deadline = loop.time() + (MAX_HISTORY_QUEUE_TIMEOUT_SECONDS if history else MAX_SHORT_READ_QUEUE_TIMEOUT_SECONDS)
+        queue_timeout = MAX_HISTORY_QUEUE_TIMEOUT_SECONDS if history else MAX_SHORT_READ_QUEUE_TIMEOUT_SECONDS
+        deadline = loop.time() + queue_timeout + timeout
+        queue_deadline = min(deadline, loop.time() + queue_timeout)
         async with self._read_schedule:
             if not history:
                 self._short_read_waiters += 1
@@ -686,8 +683,10 @@ class MaxAuthService:
                 if not history:
                     self._short_read_waiters -= 1
         try:
-            async with self.read_lock:
-                return await asyncio.wait_for(callback(client), timeout=timeout)
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError()
+            return await asyncio.wait_for(callback(client), timeout=min(timeout, remaining))
         finally:
             async with self._read_schedule:
                 self._read_busy = False
@@ -695,24 +694,15 @@ class MaxAuthService:
 
     async def read_history(self, callback: Any) -> Any:
         """Run one history page at a time without starving short MAX reads."""
-        try:
-            await asyncio.wait_for(self.history_lock.acquire(), timeout=MAX_HISTORY_QUEUE_TIMEOUT_SECONDS)
-        except TimeoutError:
-            raise TimeoutError()
-        try:
-            return await self.read(callback, history=True)
-        finally:
-            self.history_lock.release()
+        return await self.read(callback, history=True)
 
     async def mark_chat_read(self, chat_id: int) -> dict[str, Any]:
         """Mark the newest known message read after the UI shows the chat."""
         client = self.connected_client()
         try:
-            async with self.read_lock:
-                records = await asyncio.wait_for(
-                    client.fetch_history(chat_id=chat_id, backward=1, interactive=False),
-                    timeout=MAX_READ_TIMEOUT_SECONDS,
-                )
+            records = await self.read(
+                lambda client: client.fetch_history(chat_id=chat_id, backward=1, interactive=False)
+            )
             ordered = sorted(records or [], key=lambda item: int(getattr(item, "time", 0) or 0))
             if not ordered:
                 return {"success": True, "read_only": False, "marked": False}
@@ -732,10 +722,12 @@ class MaxAuthService:
         """Resolve a chat through the connected account before a mutation."""
         client = self.connected_client()
         try:
-            async with self.read_lock:
+            async def resolve(active: WebClient) -> Any:
                 chat = next((row for row in (getattr(client, "chats", None) or []) if int(getattr(row, "id", 0) or 0) == chat_id), None)
                 if chat is None:
-                    chat = await asyncio.wait_for(client.get_chat(chat_id), timeout=MAX_READ_TIMEOUT_SECONDS)
+                    chat = await active.get_chat(chat_id)
+                return chat
+            chat = await self.read(resolve)
             if chat is None or int(getattr(chat, "id", 0) or 0) != chat_id:
                 return client, None
             return client, chat
@@ -879,14 +871,13 @@ class MaxAuthService:
         chat_id, message_id, index, kind, attachment_id, stored_url, _ = entry
         url = stored_url
         if not url:
-            client = self.connected_client()
-            async with self.read_lock:
+            async def resolve_media(client: WebClient) -> Any:
                 if kind == "file":
-                    media_request = await asyncio.wait_for(client.get_file_by_id(chat_id, message_id, attachment_id), timeout=MAX_READ_TIMEOUT_SECONDS)
-                elif kind == "video":
-                    media_request = await asyncio.wait_for(client.get_video_by_id(chat_id, message_id, attachment_id), timeout=MAX_READ_TIMEOUT_SECONDS)
-                else:
-                    media_request = None
+                    return await client.get_file_by_id(chat_id, message_id, attachment_id)
+                if kind == "video":
+                    return await client.get_video_by_id(chat_id, message_id, attachment_id)
+                return None
+            media_request = await self.read(resolve_media)
             url = str(getattr(media_request, "url", "") or "")
             if url.startswith("//"):
                 url = "https:" + url
@@ -954,11 +945,38 @@ class MaxAuthService:
                 await stream.write_eof()
                 return stream
 
+    async def refresh_media_token(self, chat_id: int, message_id: int, index: int, account_id: str) -> dict[str, Any]:
+        """Mint one new opaque ref after a UI tile lost a bounded media token."""
+        if index < 0 or index > 99:
+            return {"success": False, "code": "max_media_ref_invalid", "message": "Некорректное вложение MAX."}
+        if str(serialize_profile(self.connected_client()).get("id", "")) != account_id:
+            return {"success": False, "code": "max_media_ref_account_changed", "message": "Аккаунт MAX изменился. Обновите чат."}
+
+        async def locate(client: WebClient) -> Any:
+            return await client.get_message(chat_id, message_id)
+
+        try:
+            message = await self.read(locate)
+        except (ApiError, TimeoutError, ConnectionError, OSError):
+            return {"success": False, "code": "max_media_ref_unknown", "message": "MAX не подтвердил вложение."}
+        except Exception:
+            LOG.exception("MAX media-ref refresh failed chat_id=%s message_id=%s", chat_id, message_id)
+            return {"success": False, "code": "max_media_ref_unknown", "message": "MAX не подтвердил вложение."}
+        if message is None or int(getattr(message, "chat_id", 0) or 0) != chat_id:
+            return {"success": False, "code": "max_media_ref_expired", "message": "Вложение MAX больше недоступно."}
+        attachments = list(getattr(message, "attaches", None) or [])
+        if index >= len(attachments):
+            return {"success": False, "code": "max_media_ref_expired", "message": "Вложение MAX больше недоступно."}
+        token = self.issue_media_token(chat_id, message_id, index, attachments[index])
+        if not token:
+            return {"success": False, "code": "max_media_ref_expired", "message": "Вложение MAX больше недоступно."}
+        self.persist_media_tokens()
+        return {"success": True, "media_ref": token}
+
     async def send_attachment(self, chat_id: int, name: str, mime: str, raw: bytes, caption: str, reply_to: int | None) -> dict[str, Any]:
         return await self.send_attachments(chat_id, [(name, mime, raw)], caption, reply_to)
 
     async def send_attachments(self, chat_id: int, files: list[tuple[str, str, bytes]], caption: str, reply_to: int | None) -> dict[str, Any]:
-        client = self.connected_client()
         _, chat = await self.writable_chat(chat_id)
         if chat is None:
             return {"success": False, "outcome": "rejected", "code": "max_chat_unavailable", "message": "Этот чат MAX недоступен подключённому аккаунту."}
@@ -1005,8 +1023,7 @@ class MaxAuthService:
         if chat is None:
             return {"success": False, "code": "max_chat_unavailable", "message": "Этот чат MAX недоступен подключённому аккаунту."}
         try:
-            async with self.read_lock:
-                records = await asyncio.wait_for(client.get_reactions(chat_id, [message_id]), timeout=MAX_READ_TIMEOUT_SECONDS)
+            records = await self.read(lambda client: client.get_reactions(chat_id, [message_id]))
             info = (records or {}).get(str(message_id)) or (records or {}).get(message_id)
             return {"success": True, "read_only": True, "reactions": serialize_reaction_info(info)}
         except (TimeoutError, ConnectionError, OSError):
@@ -1344,7 +1361,7 @@ async def collect_contact_profile(client: WebClient, chat_id: int, avatar_token_
     }
 
 
-def serialize_attachments(items: Iterable[Any], media_token_factory: Any = None, sticker_preview_token_factory: Any = None) -> list[dict[str, Any]]:
+def serialize_attachments(items: Iterable[Any], media_token_factory: Any = None, sticker_preview_token_factory: Any = None, chat_id: int | None = None, message_id: int | None = None, account_id: str = "") -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for index, item in enumerate(items or []):
         raw_type = getattr(item, "type", "unknown")
@@ -1384,9 +1401,12 @@ def serialize_attachments(items: Iterable[Any], media_token_factory: Any = None,
             value = getattr(item, source, None)
             if isinstance(value, (str, int)) and value != "":
                 entry[target] = value
+        token = ""
         if callable(media_token_factory):
             token = media_token_factory(index, item)
             if token: entry["media_ref"] = token
+        if token and chat_id is not None and message_id is not None and re.fullmatch(r"[1-9][0-9]{0,19}", account_id):
+            entry["media_identity"] = {"chat_id": str(chat_id), "message_id": str(message_id), "index": index, "account_id": account_id}
         if attachment_type == "sticker" and callable(sticker_preview_token_factory):
             preview_token = sticker_preview_token_factory(index, item)
             if preview_token: entry["preview_ref"] = preview_token
@@ -1436,7 +1456,7 @@ def serialize_message(
         "text": str(getattr(message, "text", "") or ""),
         "timestamp": int(getattr(message, "time", 0) or 0),
         "type": str(getattr(message, "type", "") or ""),
-        "attachments": serialize_attachments(getattr(message, "attaches", []), media_token_factory, sticker_preview_token_factory),
+        "attachments": serialize_attachments(getattr(message, "attaches", []), media_token_factory, sticker_preview_token_factory, int(message.chat_id), int(message.id), account_id),
         "reply_to": reply_to,
         "reactions": [{"emoji": str(counter.reaction), "count": int(counter.count)} for counter in counters],
         "own_reaction": str(getattr(reaction_info, "your_reaction", "") or ""),
@@ -1788,6 +1808,17 @@ async def media(request: web.Request) -> web.StreamResponse:
     return await request.app["service"].media(token, request)
 
 
+async def media_ref(request: web.Request) -> web.Response:
+    chat_id = max_chat_id(request.query.get("chat_id"))
+    message_id = max_message_id(request.query.get("message_id"))
+    index_raw = request.query.get("index", "")
+    account_id = request.query.get("account_id", "")
+    if chat_id is None or message_id is None or not re.fullmatch(r"[0-9]{1,2}", index_raw) or not re.fullmatch(r"[1-9][0-9]{0,19}", account_id):
+        return json_response({"success": False, "code": "max_media_ref_invalid", "message": "Некорректное вложение MAX."}, 422)
+    payload = await request.app["service"].refresh_media_token(chat_id, message_id, int(index_raw), account_id)
+    return json_response(payload, 200 if payload.get("success") else 404)
+
+
 async def realtime_events(request: web.Request) -> web.Response:
     cursor = realtime_cursor(request.query.get("after"))
     if cursor is None:
@@ -1906,6 +1937,7 @@ def build_app() -> web.Application:
     app.router.add_post("/v1/chats/{chat_id}/read", chat_read)
     app.router.add_get("/v1/events", realtime_events)
     app.router.add_get("/v1/media/{token}", media)
+    app.router.add_get("/v1/media-ref", media_ref)
     app.router.add_get("/v1/messages/reactions", message_reactions)
     app.router.add_post("/v1/messages/send", message_send)
     app.router.add_post("/v1/messages/attachment", message_attachment)

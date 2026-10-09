@@ -44,7 +44,7 @@ $allowedActions = [
     'get_new_messages', 'get_whatsapp_status', 'get_updated_chats', 'get_local_messages',
     'mark_chat_read', 'send_message_by_target', 'send_message_by_phone', 'delete_chat_universal',
     'clear_whatsapp_data', 'stream_external_media', 'telegram_media', 'provider_route',
-    'stream_avatar', 'max_media',
+    'stream_avatar', 'max_media', 'max_media_ref',
 ];
 if ($action === '' || !in_array($action, $allowedActions, true)) {
     desktop_api_error(403, 'This desktop API operation is not allowed.');
@@ -134,6 +134,23 @@ if ($action === 'max_media') {
     // Keep MAX's own Range, status and MIME validation in one place. The
     // desktop facade only authorizes this opaque, account-scoped media ref.
     $_GET = ['resource' => 'media', 'ref' => $ref];
+    require __DIR__ . '/max_api.php';
+    exit;
+}
+if ($action === 'max_media_ref') {
+    if (strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'GET') {
+        desktop_api_error(405, 'MAX media-reference method is not allowed.');
+    }
+    $chatId = (string)($_GET['chat_id'] ?? '');
+    $messageId = (string)($_GET['message_id'] ?? '');
+    $accountId = (string)($_GET['account_id'] ?? '');
+    $index = (string)($_GET['index'] ?? '');
+    if (!preg_match('/^-?[0-9]{1,20}$/D', $chatId) || !preg_match('/^[1-9][0-9]{0,19}$/D', $messageId)
+        || !preg_match('/^[1-9][0-9]{0,19}$/D', $accountId)
+        || !preg_match('/^[0-9]{1,2}$/D', $index)) {
+        desktop_api_error(404, 'MAX media attachment was not found.');
+    }
+    $_GET = ['resource' => 'media_ref', 'chat_id' => $chatId, 'message_id' => $messageId, 'account_id' => $accountId, 'index' => $index];
     require __DIR__ . '/max_api.php';
     exit;
 }

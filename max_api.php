@@ -153,6 +153,23 @@ if ($resource === 'media') {
     if (!$emitted || (!$ok && $status !== 416)) { if (!headers_sent()) http_response_code($status ?: 502); }
     exit;
 }
+if ($resource === 'media_ref') {
+    $chatId = max_api_chat_id($_GET['chat_id'] ?? null);
+    $messageId = (string)($_GET['message_id'] ?? '');
+    $accountId = (string)($_GET['account_id'] ?? '');
+    $index = (string)($_GET['index'] ?? '');
+    if ($chatId === null || !preg_match('/^[1-9][0-9]{0,19}$/D', $messageId)
+        || !preg_match('/^[1-9][0-9]{0,19}$/D', $accountId)
+        || !preg_match('/^[0-9]{1,2}$/D', $index)) {
+        max_api_json(['success' => false, 'code' => 'max_media_ref_invalid', 'message' => 'Некорректное вложение MAX.'], 422);
+    }
+    max_api_forward('GET', '/v1/media-ref?' . http_build_query([
+        'chat_id' => $chatId,
+        'message_id' => $messageId,
+        'account_id' => $accountId,
+        'index' => $index,
+    ]));
+}
 if ($resource === 'profile') max_api_forward('GET', '/v1/profile');
 if ($resource === 'contact_profile') {
     $chatId = (string)($_GET['chat_id'] ?? '');

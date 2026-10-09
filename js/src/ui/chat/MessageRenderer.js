@@ -362,6 +362,16 @@ export class MessageRenderer {
       const safeVideoMime = /^video\/[a-z0-9.+-]{1,80}$/.test(mime) ? mime : 'video/mp4';
       const safeAudioMime = /^audio\/[a-z0-9.+-]{1,80}$/.test(mime) ? mime : 'audio/mpeg';
       const lbHref = this.chat._toLightboxOpenUrl(openUrl || displayUrl, filename);
+      const refreshChatId = String(att.media_refresh_chat_id || '');
+      const refreshMessageId = String(att.media_refresh_message_id || '');
+      const refreshAccountId = String(att.media_refresh_account_id || '');
+      const refreshIndex = Number(att.media_refresh_index);
+      const mediaRefreshAttr = /^-?[0-9]{1,20}$/.test(refreshChatId)
+        && /^[1-9][0-9]{0,19}$/.test(refreshMessageId)
+        && /^[1-9][0-9]{0,19}$/.test(refreshAccountId)
+        && Number.isInteger(refreshIndex) && refreshIndex >= 0 && refreshIndex <= 99
+        ? ` data-media-refresh-chat-id="${this.chat._escapeHtml(refreshChatId)}" data-media-refresh-message-id="${this.chat._escapeHtml(refreshMessageId)}" data-media-refresh-account-id="${this.chat._escapeHtml(refreshAccountId)}" data-media-refresh-index="${refreshIndex}"`
+        : '';
       const normalizeAttType = (att) => {
         const t = (att.type || '').toLowerCase();
         const k = (att.kind || att.media_kind || att.media_group_kind || '').toLowerCase();
@@ -432,7 +442,7 @@ export class MessageRenderer {
         else if (motion === 'sticker-image') content = `<img class="msg-sticker" alt="Стикер" data-lazy-src="${src}">`;
         else content = `<div class="video-player"><video class="msg-video" muted loop playsinline preload="metadata" data-lazy="1" aria-label="${label}" data-download-url="${dl}"><source data-lazy-src="${src}" type="${this.chat._escapeHtml(att.mime || 'video/mp4')}"></video></div>`;
         const previewSrc = this.chat._escapeHtml(this.chat._safeRemoteUrl(att.preview_url || ''));
-        return `<div class="media-holder motion-media ${motion === 'sticker-image' || motion === 'lottie' ? '' : 'video-holder'} ${sticker ? 'motion-sticker' : ''} ${motion === 'note' ? 'video-note' : ''}" data-motion="${motion}"${motion === 'lottie' ? ` data-motion-src="${src}"${previewSrc ? ` data-motion-preview-src="${previewSrc}"` : ''}` : ''}>${content}${control}${motion === 'note' ? '<span class="motion-time"></span>' : ''}<a class="motion-download" href="${dl}" download title="Скачать" aria-label="Скачать ${label.toLowerCase()}">↓</a></div>`;
+        return `<div class="media-holder motion-media ${motion === 'sticker-image' || motion === 'lottie' ? '' : 'video-holder'} ${sticker ? 'motion-sticker' : ''} ${motion === 'note' ? 'video-note' : ''}" data-motion="${motion}"${mediaRefreshAttr}${motion === 'lottie' ? ` data-motion-src="${src}"${previewSrc ? ` data-motion-preview-src="${previewSrc}"` : ''}` : ''}>${content}${control}${motion === 'note' ? '<span class="motion-time"></span>' : ''}<a class="motion-download" href="${dl}" download title="Скачать" aria-label="Скачать ${label.toLowerCase()}">↓</a></div>`;
       }
 
       if (attachmentType === 'photo') {
@@ -449,7 +459,7 @@ export class MessageRenderer {
         const fallbackAttr = fullFallbackSrc ? ` data-fallback-src="${this.chat._escapeHtml(fullFallbackSrc)}"` : '';
         const isAnimatedImage = att.animated === true || mime === 'image/gif' || /\.gif(?:[?#]|$)/i.test(String(filename));
         const motionBadge = isAnimatedImage ? '<span class="media-motion-badge" aria-label="Анимированный GIF">GIF</span>' : '';
-        return `<div class="media-holder single-photo${isAnimatedImage ? ' animated-image' : ''}">${motionBadge}<a class="single-photo-link" href="${lbHref}" data-lightbox="m-${id}" data-title="${lightboxTitle}"><img class="msg-photo rounded" alt="${niceName}" data-lazy-src="${imgSrc}"${fallbackAttr}></a>${isOptimistic ? '' : `<a class="tile-dl" href="${downloadUrl}" download="${niceName}" title="Скачать"><i class="bi bi-download"></i></a>`}</div>`;
+        return `<div class="media-holder single-photo${isAnimatedImage ? ' animated-image' : ''}"${mediaRefreshAttr}>${motionBadge}<a class="single-photo-link" href="${lbHref}" data-lightbox="m-${id}" data-title="${lightboxTitle}"><img class="msg-photo rounded" alt="${niceName}" data-lazy-src="${imgSrc}"${fallbackAttr}></a>${isOptimistic ? '' : `<a class="tile-dl" href="${downloadUrl}" download="${niceName}" title="Скачать"><i class="bi bi-download"></i></a>`}</div>`;
       }
       if (attachmentType === 'video') {
         const isVideoNote = att.video_note === true || Number(att.video_type) === 1;
@@ -485,12 +495,12 @@ export class MessageRenderer {
         const preload = 'none';
         const src = this.chat._escapeHtml(displayUrl || '');
         const safeDownload = this.chat._escapeHtml(this.chat._withDlParam(lbHref));
-        return `<div class="${videoHolderClass}"><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr} aria-label="${this.chat._escapeHtml(`${videoLabel} ${filename}`)}" data-lazy="1" data-fallback-label="${safeFilename}" data-download-url="${safeDownload}"><source data-lazy-src="${src}" type="${safeVideoMime}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
+        return `<div class="${videoHolderClass}"${mediaRefreshAttr}><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr} aria-label="${this.chat._escapeHtml(`${videoLabel} ${filename}`)}" data-lazy="1" data-fallback-label="${safeFilename}" data-download-url="${safeDownload}"><source data-lazy-src="${src}" type="${safeVideoMime}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
       }
       if (attachmentType === 'audio') {
         const src = this.chat._escapeHtml(displayUrl || '');
         const safeDownload = this.chat._escapeHtml(this.chat._withDlParam(lbHref));
-        return `<div class="media-holder"><audio controls preload="metadata" data-lazy="1"><source data-lazy-src="${src}" type="${safeAudioMime}"></audio><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать аудио</span></a></div></div>`;
+        return `<div class="media-holder"${mediaRefreshAttr}><audio controls preload="metadata" data-lazy="1"><source data-lazy-src="${src}" type="${safeAudioMime}"></audio><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать аудио</span></a></div></div>`;
       }
       if (attachmentType === 'sticker') {
         const src = displayUrl || openUrl || '';
@@ -499,7 +509,7 @@ export class MessageRenderer {
           return `<div class="message-sticker"><span class="sticker-fallback"><i class="bi bi-sticky"></i><span>${att.unavailable_label || 'Стикер недоступен'}</span></span></div>`;
         }
         const downloadUrl = this.chat._withDlParam(this.chat._withNameParam(src, niceName));
-        return `<div class="message-sticker"><img class="msg-sticker" alt="Стикер" data-lazy-src="${src}"><a class="tile-dl" href="${downloadUrl}" download="${niceName}" title="Скачать стикер"><i class="bi bi-download"></i></a></div>`;
+        return `<div class="message-sticker"${mediaRefreshAttr}><img class="msg-sticker" alt="Стикер" data-lazy-src="${src}"><a class="tile-dl" href="${downloadUrl}" download="${niceName}" title="Скачать стикер"><i class="bi bi-download"></i></a></div>`;
       }
       if (attachmentType === 'file') {
         const providedDownload = att.download || att.public_url || openUrl || displayUrl || att.url || '';
@@ -520,7 +530,7 @@ export class MessageRenderer {
         const iconClass = ext === 'pdf' ? 'is-pdf' : (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext) ? 'is-archive' : (['mp3', 'wav', 'ogg', 'mp4', 'mov', 'avi'].includes(ext) ? 'is-media' : ''));
         const iconName = ext === 'pdf' ? 'bi-file-earmark-pdf' : (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext) ? 'bi-file-earmark-zip' : (['mp3', 'wav', 'ogg', 'mp4', 'mov', 'avi'].includes(ext) ? 'bi-file-earmark-play' : 'bi-file-earmark'));
         const thumbHtml = `<span class="attachment-icon ${iconClass}"><i class="bi ${iconName}"></i></span>`;
-        return `<div class="msg-file attachment-card"><a class="file-link d-flex align-items-center" href="${open}" target="_blank" rel="noopener">${thumbHtml}<span class="file-meta"><span class="file-name">${niceName}</span><span class="file-kind">${att.source_type === 'document' ? 'Вложение' : 'Файл'}</span></span></a><a class="attachment-download" href="${dl}" download="${niceName}" title="Скачать"><i class="bi bi-download"></i></a></div>`;
+        return `<div class="msg-file attachment-card"${mediaRefreshAttr}><a class="file-link d-flex align-items-center" href="${open}" target="_blank" rel="noopener">${thumbHtml}<span class="file-meta"><span class="file-name">${niceName}</span><span class="file-kind">${att.source_type === 'document' ? 'Вложение' : 'Файл'}</span></span></a><a class="attachment-download" href="${dl}" download="${niceName}" title="Скачать"><i class="bi bi-download"></i></a></div>`;
       }
       return '';
     };

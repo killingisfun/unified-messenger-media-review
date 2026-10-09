@@ -26,6 +26,10 @@ export class ChatLifetime {
     return cleanup;
   }
 
+  remove(cleanup) {
+    this._cleanups.delete(cleanup);
+  }
+
   listen(target, type, handler, options) {
     if (!target?.addEventListener || typeof handler !== 'function') return () => {};
     target.addEventListener(type, handler, options);

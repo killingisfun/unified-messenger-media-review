@@ -242,7 +242,7 @@ public sealed class DesktopUiHost : IDisposable
             }
             if (path.Equals("/max_api.php", StringComparison.OrdinalIgnoreCase))
             {
-                eventArgs.Response = await ForwardMaxMediaAsync(eventArgs.Request, requestUri);
+                eventArgs.Response = await ForwardMaxApiAsync(eventArgs.Request, requestUri);
                 return;
             }
             if (path.Equals("/media_stream.php", StringComparison.OrdinalIgnoreCase)
@@ -491,13 +491,15 @@ public sealed class DesktopUiHost : IDisposable
             method, "telegram_media", parameters, requestHeaders: requestHeaders);
     }
 
-    private async Task<CoreWebView2WebResourceResponse> ForwardMaxMediaAsync(CoreWebView2WebResourceRequest request, Uri requestUri)
+    private async Task<CoreWebView2WebResourceResponse> ForwardMaxApiAsync(CoreWebView2WebResourceRequest request, Uri requestUri)
     {
         if (!string.Equals(request.Method, "GET", StringComparison.OrdinalIgnoreCase)
             && !string.Equals(request.Method, "HEAD", StringComparison.OrdinalIgnoreCase))
             return CreateTextResponse("Method not allowed", 405, "Method Not Allowed", "text/plain; charset=utf-8");
 
         var parameters = ParseQuery(requestUri.Query);
+        if (parameters.TryGetValue("resource", out var refreshResource) && refreshResource == "media_ref")
+            return await ForwardMaxMediaReferenceAsync(request, parameters);
         if (!parameters.Remove("resource", out var resource) || resource != "media"
             || !parameters.Remove("ref", out var mediaRef) || !MaxMediaRefPattern.IsMatch(mediaRef)
             || parameters.Any(pair => pair.Key != "r" || !CacheBusterPattern.IsMatch(pair.Value)))
@@ -512,6 +514,34 @@ public sealed class DesktopUiHost : IDisposable
             new Dictionary<string, string>(StringComparer.Ordinal) { ["ref"] = mediaRef },
             requestHeaders: headers);
         RecordTransport("max_media", (int)response.StatusCode, request.Method);
+        var stream = await response.Content.ReadAsStreamAsync();
+        return _webView!.Environment.CreateWebResourceResponse(
+            new ResponseOwnedStream(stream, response), (int)response.StatusCode,
+            response.ReasonPhrase ?? "OK", BuildResponseHeaders(response));
+    }
+
+    private async Task<CoreWebView2WebResourceResponse> ForwardMaxMediaReferenceAsync(
+        CoreWebView2WebResourceRequest request,
+        Dictionary<string, string> parameters)
+    {
+        if (!string.Equals(request.Method, "GET", StringComparison.OrdinalIgnoreCase)
+            || !parameters.Remove("resource", out var resource) || resource != "media_ref"
+            || !parameters.Remove("chat_id", out var chatId) || !TelegramChatIdPattern.IsMatch(chatId)
+            || !parameters.Remove("message_id", out var messageId) || !TelegramMessageIdPattern.IsMatch(messageId)
+            || !parameters.Remove("account_id", out var accountId) || !TelegramMessageIdPattern.IsMatch(accountId)
+            || !parameters.Remove("index", out var index) || !Regex.IsMatch(index, "^[0-9]{1,2}$", RegexOptions.CultureInvariant)
+            || parameters.Any(pair => pair.Key != "r" || !CacheBusterPattern.IsMatch(pair.Value)))
+            return CreateTextResponse("Not found", 404, "Not Found", "text/plain; charset=utf-8");
+
+        var response = await _api.SendApiAsync(HttpMethod.Get, "max_media_ref",
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["chat_id"] = chatId,
+                ["message_id"] = messageId,
+                ["account_id"] = accountId,
+                ["index"] = index,
+            });
+        RecordTransport("max_media_ref", (int)response.StatusCode, request.Method);
         var stream = await response.Content.ReadAsStreamAsync();
         return _webView!.Environment.CreateWebResourceResponse(
             new ResponseOwnedStream(stream, response), (int)response.StatusCode,
@@ -656,10 +686,21 @@ public sealed class DesktopUiHost : IDisposable
 
     private static async Task CopyResponseBodyAsync(HttpResponseMessage response, Stream destination, CancellationToken cancellationToken)
     {
-        using var bodyDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        bodyDeadline.CancelAfter(TimeSpan.FromMinutes(2));
-        await using var source = await response.Content.ReadAsStreamAsync(bodyDeadline.Token);
-        await source.CopyToAsync(destination, 81920, bodyDeadline.Token);
+        // A healthy large download may need longer than two minutes. Bound
+        // the whole operation separately, while treating a 45-second gap
+        // between bytes as a stalled body.
+        using var totalDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        totalDeadline.CancelAfter(TimeSpan.FromMinutes(20));
+        await using var source = await response.Content.ReadAsStreamAsync(totalDeadline.Token);
+        var buffer = new byte[81920];
+        while (true)
+        {
+            using var idleDeadline = CancellationTokenSource.CreateLinkedTokenSource(totalDeadline.Token);
+            idleDeadline.CancelAfter(TimeSpan.FromSeconds(45));
+            var read = await source.ReadAsync(buffer.AsMemory(), idleDeadline.Token);
+            if (read == 0) return;
+            await destination.WriteAsync(buffer.AsMemory(0, read), totalDeadline.Token);
+        }
     }
 
     private static string UniqueArchiveEntryName(string proposedName, ISet<string> usedNames)
