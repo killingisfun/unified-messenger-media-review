@@ -264,13 +264,11 @@ export class ChatAlbums {
   _collapseLocalOutgoingDocumentBatches(messages) {
     if (!Array.isArray(messages) || messages.length === 0) return messages || [];
     const membership = this._localOutgoingDocumentBatches();
-    if (!membership.size) return messages;
 
     // Add a synthetic group only to rows whose exact native ID belongs to a
-    // fully confirmed local file operation.  This is intentionally not a
-    // time-window rule: separate documents sent close together must remain
-    // separate, while one slow multi-file upload remains one card after a
-    // page refresh.
+    // fully confirmed local file operation. A provider supplied grouped_id is
+    // already authoritative and is preserved below. Neither path uses a
+    // time window: two independent uploads near one another stay separate.
     const annotated = messages.map((message) => {
       const id = this.chat._historyMessageId(message);
       const local = membership.get(id);
@@ -289,49 +287,55 @@ export class ChatAlbums {
     });
 
     const sorted = this.chat._sortHistoryMessages(annotated);
-    const result = [];
-    for (let index = 0; index < sorted.length;) {
-      const first = sorted[index];
-      const groupId = String(first?.media_group_id || first?.group_id || first?.groupId || '');
-      if (!groupId.startsWith('local-document-batch:')) {
-        result.push(first);
-        index++;
-        continue;
-      }
-      const group = [first];
-      let next = index + 1;
-      while (next < sorted.length) {
-        const candidate = sorted[next];
-        const candidateGroup = String(candidate?.media_group_id || candidate?.group_id || candidate?.groupId || '');
-        if (candidateGroup !== groupId) break;
-        group.push(candidate);
-        next++;
-      }
-      const expected = membership.get(this.chat._historyMessageId(first))?.ids || [];
-      const actual = group.map(message => this.chat._historyMessageId(message));
-      // A history page must contain every member before it becomes one card.
-      // This prevents a partial page from falsely implying the batch is
-      // complete; the next page will make the exact aggregate on its own.
-      if (expected.length > 1 && expected.length === actual.length
-        && expected.every(id => actual.includes(id))) {
-        const last = group[group.length - 1];
-        result.push({
-          ...last,
-          text: group.map(message => String(message?.text || '').trim()).find(Boolean) || '',
-          attachments: group.flatMap(message => Array.isArray(message?.attachments) ? message.attachments : []),
-          groupId,
-          group_id: groupId,
-          media_group_id: groupId,
-          _albumMessageIds: actual,
-          _albumMessages: group,
-          _localDocumentBatch: true,
-        });
-      } else {
-        result.push(...group);
-      }
-      index = next;
+    const groups = new Map();
+    for (const [index, message] of sorted.entries()) {
+      const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+      if (!attachments.some(attachment => this.chat._isDocumentAttachment(attachment))) continue;
+      const groupId = String(message?.media_group_id || message?.group_id || message?.groupId || '').trim();
+      if (!groupId) continue;
+      // Direction is part of the identity: a malformed provider row may not
+      // turn an incoming document into a local outgoing operation.
+      const key = `${String(message?.direction || '')}:${groupId}`;
+      const record = groups.get(key) || { groupId, members: [] };
+      record.members.push({ index, message });
+      groups.set(key, record);
     }
-    return result;
+
+    const aggregateAt = new Map();
+    const hiddenIndexes = new Set();
+    for (const record of groups.values()) {
+      const members = record.members;
+      if (members.length < 2) continue;
+      const childMessages = members.map(entry => entry.message);
+      const ids = childMessages.map(message => this.chat._historyMessageId(message)).filter(Boolean);
+      if (ids.length !== childMessages.length || new Set(ids).size !== ids.length) continue;
+      const local = membership.get(ids[0]);
+      // A synthetic local group has an expected exact membership. Do not show
+      // a partial history page as a complete operation; provider-native
+      // grouped_id has no guessed expected size, so its observed children are
+      // a genuine partial/native presentation rather than invented success.
+      if (record.groupId.startsWith('local-document-batch:')
+        && (!local || local.ids.length !== ids.length || !local.ids.every(id => ids.includes(id)))) continue;
+      const lastEntry = members[members.length - 1];
+      aggregateAt.set(lastEntry.index, {
+        ...lastEntry.message,
+        text: childMessages.map(message => String(message?.text || '').trim()).find(Boolean) || '',
+        attachments: childMessages.flatMap(message => Array.isArray(message?.attachments) ? message.attachments : []),
+        groupId: record.groupId,
+        group_id: record.groupId,
+        media_group_id: record.groupId,
+        _albumMessageIds: ids,
+        _albumMessages: childMessages,
+        _localDocumentBatch: record.groupId.startsWith('local-document-batch:'),
+        _nativeDocumentBatch: !record.groupId.startsWith('local-document-batch:'),
+      });
+      members.slice(0, -1).forEach(entry => hiddenIndexes.add(entry.index));
+    }
+
+    return sorted.flatMap((message, index) => {
+      if (hiddenIndexes.has(index)) return [];
+      return [aggregateAt.get(index) || message];
+    });
   }
 
   normalizeMediaGroups() {

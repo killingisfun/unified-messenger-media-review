@@ -1,4 +1,4 @@
-# Follow-up for expert review: document batch still splits in the desktop UI
+# Follow-up for expert review: Telegram document batch protocol and UI identity
 
 ## Observed result
 
@@ -9,29 +9,34 @@ The desired result is one outgoing file card with all selected documents and
 one `Download all` action.  This report is intentionally limited to UI source
 and tests; it contains no provider credentials, database, session, or logs.
 
-## Provider fact already established
+## Corrected provider fact
 
-Telegram sends document-mode selections as separate native messages.  That is
-expected: they are not a native Telegram media album.  The UI therefore must
-preserve the user's single selection as one request-scoped visual group without
-guessing from timestamps.  A successful HTTP response is not a delivery
-receipt; the relevant evidence is the individual native message IDs.
+Telegram `messages.sendMultiMedia` does support grouped documents, but every
+item must first go through `messages.uploadMedia`; the returned document/photo
+reference, not raw `inputMediaUploaded*`, belongs in the album call. This
+package now contains that server-side conversion in `telegram_service/rest.php`
+and routes «Send as file» multi-selection to the native batch path.
+
+A successful HTTP response is still not a delivery receipt. Each native ID is
+kept as a child of one user operation, and the visual card groups only exact
+native `grouped_id` or exact, fully confirmed operation membership. It never
+uses a time window for outgoing documents.
 
 ## Current implementation to review
 
-1. `ChatOutbox._registerBatchExpectedId` records every known native ID before
-   realtime/history can render a duplicate.
-2. `ChatOutbox._completeBatchReconciliation` is meant to replace the one
-   optimistic node with a combined message after all expected IDs arrive.
-3. `SendJournal` persists component IDs per request and account.
-4. `ChatAlbums._collapseLocalOutgoingDocumentBatches` is meant to combine the
-   matching history rows again after reopening a chat.
-5. `MessageRenderer.renderMessagesBatch` calls this reconstruction before
-   provider-specific album handling.
+1. `ChatOutbox` uses the durable native batch route for Telegram files,
+   including the explicit `attachment_as_file` mode.
+2. `MessageRenderer` expands an aggregate into individual native children
+   before reconciliation; it then creates presentation groups only afterwards.
+3. `ChatAlbums._collapseLocalOutgoingDocumentBatches` combines exact native
+   grouped IDs even when another message is interleaved, while synthetic
+   request-scoped groups require all expected IDs.
+4. Receipt-only events update delivery status but cannot replace an attachment
+   snapshot or prematurely complete a batch.
 
-Despite those paths, the actual WebView result is still separate cards.  Do
-not assume the synthetic group works merely because the focused unit contracts
-pass.  Please trace the live ordering and module loading end-to-end:
+The native flow has not been exercised against a production chat in this
+package. Do not assume it is verified merely because focused contracts pass.
+Please trace the live ordering and module loading end-to-end:
 
 - whether the UI entrypoint imports the same `BaseChat`, `ChatOutbox`, and
   `ChatAlbums` revisions that the desktop package serves;
@@ -60,6 +65,8 @@ pass.  Please trace the live ordering and module loading end-to-end:
   `ChatOutbox._completeBatchReconciliation` method with a narrow DOM seam.
 - `tests/local-document-batch-history-contract.cjs` executes the real
   `ChatAlbums._collapseLocalOutgoingDocumentBatches` method for complete,
-  partial, and unknown-outcome cases.
+  partial, unknown-outcome and interleaved native-group cases.
+- `tests/document-batch-event-order-contract.cjs` verifies that a presentation
+  aggregate never becomes a single snapshot keyed by its last native ID.
 
 They establish intended local invariants, not proof of the full WebView flow.

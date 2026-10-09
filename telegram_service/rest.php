@@ -1227,6 +1227,32 @@ function proactive_cache_media(API $mp, string $peer, int $mid): bool
 }
 
 /**
+ * `messages.sendMultiMedia` cannot accept raw inputMediaUploaded* values.
+ * Telegram requires each upload to be associated with the target peer first,
+ * then referenced as inputMediaPhoto/inputMediaDocument in the album request.
+ */
+function telegram_album_media_reference(array $uploadedMedia, bool $photo): array
+{
+    $entity = $photo ? ($uploadedMedia['photo'] ?? null) : ($uploadedMedia['document'] ?? null);
+    $kind = $photo ? 'photo' : 'document';
+    if (!is_array($entity)
+        || !array_key_exists('id', $entity)
+        || !array_key_exists('access_hash', $entity)
+        || !array_key_exists('file_reference', $entity)) {
+        throw new RuntimeException("messages.uploadMedia returned no reusable {$kind} reference");
+    }
+    return [
+        '_' => $photo ? 'inputMediaPhoto' : 'inputMediaDocument',
+        'id' => [
+            '_' => $photo ? 'inputPhoto' : 'inputDocument',
+            'id' => $entity['id'],
+            'access_hash' => $entity['access_hash'],
+            'file_reference' => $entity['file_reference'],
+        ],
+    ];
+}
+
+/**
  * Кэширует медиа и превью для списка сырых TG-сообщений одной беседы.
  * Используется внутри getChatHistory/messages и т.п.
  */
@@ -2375,6 +2401,7 @@ case 'sendMessage': {
 
     $caption   = (string)($payload['message'] ?? $payload['caption'] ?? ''); // Добавил 'caption' для совместимости
     $replyToId = (int)($payload['reply_to_message_id'] ?? 0);
+    $sendAsFile = (string)($payload['send_as_file'] ?? '') === '1';
     $attachments = $payload['attachments'] ?? [];
 
     $mp = start_madeline_locked();
@@ -2419,7 +2446,7 @@ if (empty($_FILES['file']) && !empty($_FILES['attachment'])) {
             try {
                 $uploaded = $mp->upload($tmp, $name);
 
-                if (str_starts_with($mime, 'image/') && strtolower(pathinfo($name, PATHINFO_EXTENSION)) !== 'gif') {
+                if (!$sendAsFile && str_starts_with($mime, 'image/') && strtolower(pathinfo($name, PATHINFO_EXTENSION)) !== 'gif') {
                     $media = ['_' => 'inputMediaUploadedPhoto', 'file' => $uploaded];
                 } else {
                     $attrs = [['_' => 'documentAttributeFilename', 'file_name' => $name]];
@@ -3420,6 +3447,13 @@ if (!empty($messageIds)) {
                         $type  = 'text';
                         $filename = null;
                         $mime = null;
+                        // `messages` contains ordinary text rows as well as
+                        // media rows.  This route always passes the field to
+                        // the shared normalizer below, so it must be reset
+                        // for every item instead of inheriting an earlier
+                        // media value (or being undefined on the first text
+                        // row and aborting the entire history response).
+                        $media = null;
 
                         if (!empty($m['media'])) {
                             $media = $m['media'];
@@ -3864,6 +3898,7 @@ foreach ($normalized_items as $item) {
                 $files = is_array($payload['files'] ?? null) ? $payload['files'] : [];
                 $caption = (string)($payload['caption'] ?? '');
                 $replyToId = (int)($payload['reply_to_message_id'] ?? 0);
+                $sendAsFile = (string)($payload['send_as_file'] ?? '') === '1';
                 $operationId = trim((string)($payload['operation_id'] ?? ''));
                 if (!preg_match('/^job_[a-f0-9]{24}$/D', $operationId)) $operationId = '';
                 if ($peer === '' || count($files) < 2 || count($files) > 10) {
@@ -3891,15 +3926,20 @@ foreach ($normalized_items as $item) {
                     $multi = [];
                     foreach ($prepared as $position => &$file) {
                         $uploaded = $mp->upload($file['path'], $file['name']);
-                        $photo = str_starts_with($file['mime'], 'image/') && strtolower(pathinfo($file['name'], PATHINFO_EXTENSION)) !== 'gif';
+                        $photo = !$sendAsFile && str_starts_with($file['mime'], 'image/') && strtolower(pathinfo($file['name'], PATHINFO_EXTENSION)) !== 'gif';
                         if ($photo) {
-                            $media = ['_' => 'inputMediaUploadedPhoto', 'file' => $uploaded];
+                            $uploadedMedia = ['_' => 'inputMediaUploadedPhoto', 'file' => $uploaded];
                         } else {
                             $attrs = [['_' => 'documentAttributeFilename', 'file_name' => $file['name']]];
                             if (str_starts_with($file['mime'], 'video/')) $attrs[] = ['_' => 'documentAttributeVideo', 'supports_streaming' => true];
                             if (str_starts_with($file['mime'], 'audio/')) $attrs[] = ['_' => 'documentAttributeAudio'];
-                            $media = ['_' => 'inputMediaUploadedDocument', 'file' => $uploaded, 'mime_type' => $file['mime'], 'attributes' => $attrs];
+                            $uploadedMedia = ['_' => 'inputMediaUploadedDocument', 'file' => $uploaded, 'mime_type' => $file['mime'], 'attributes' => $attrs];
                         }
+                        // Per Telegram's MTProto contract, sendMultiMedia
+                        // accepts only the peer-associated reference returned
+                        // by messages.uploadMedia, never raw Uploaded media.
+                        $uploadedResult = $mp->messages->uploadMedia(['peer' => $peer, 'media' => $uploadedMedia]);
+                        $media = telegram_album_media_reference($uploadedResult, $photo);
                         // updateMessageID carries this value back from Telegram.
                         // It is the only reliable association to the original input.
                         $file['random_id'] = (string)\danog\MadelineProto\Tools::randomInt(0, PHP_INT_MAX);
@@ -3987,6 +4027,11 @@ foreach ($normalized_items as $item) {
                 if ($peer === '') fail('chatId is required');
 
                 $caption = (string)($payload['caption'] ?? '');
+                // `sendFile` is the endpoint used by the current adapter for
+                // one multipart attachment.  It must honour the same
+                // explicit document preference as send_message and albums;
+                // otherwise every JPEG/PNG is silently converted to a photo.
+                $sendAsFile = (string)($payload['send_as_file'] ?? '') === '1';
 
                 // -------- приоритет: ПРЯМАЯ ССЫЛКА (как в WhatsApp) --------
                 $url = null;
@@ -4023,7 +4068,7 @@ foreach ($normalized_items as $item) {
                     try {
                         // 1) Пытаемся через low-level external
                         try {
-                            $media = (str_starts_with($mime, 'image/') && $ext !== 'gif')
+                            $media = (!$sendAsFile && str_starts_with($mime, 'image/') && $ext !== 'gif')
                                 ? ['_' => 'inputMediaPhotoExternal',    'url' => $url]
                                 : ['_' => 'inputMediaDocumentExternal', 'url' => $url];
 
@@ -4035,7 +4080,7 @@ foreach ($normalized_items as $item) {
                         } catch (\Throwable $ex) {
                             // 2) Фолбэк: high-level с RemoteUrl
                             $rl = new RemoteUrl($url);
-                            if (str_starts_with($mime, 'image/') && $ext !== 'gif') {
+                            if (!$sendAsFile && str_starts_with($mime, 'image/') && $ext !== 'gif') {
                                 $res = $mp->sendPhoto($peer, $rl, $caption);
                             } else {
                                 $res = $mp->sendDocument($peer, $rl, $caption);
@@ -4045,8 +4090,16 @@ foreach ($normalized_items as $item) {
                         // Достаём подтверждённый message_id из любого формата апдейтов
                         [$msgId, $date] = extract_sent_message_meta($res);
                         if (!$msgId) fail('Telegram did not confirm media message', 502);
-                        proactive_cache_media($mp, (string)$peer, (int)$msgId);
-                        notify_webhook_sent_update((string)$peer, (int)$msgId, (int)$date, (string)$caption, $clientUid);
+                        // The provider accepted the message. Cache and
+                        // webhook publication are best-effort side effects:
+                        // neither may turn a confirmed native id into HTTP
+                        // 500 and provoke a duplicate retry by a caller.
+                        try {
+                            proactive_cache_media($mp, (string)$peer, (int)$msgId);
+                            notify_webhook_sent_update((string)$peer, (int)$msgId, (int)$date, (string)$caption, $clientUid);
+                        } catch (Throwable $sideEffectError) {
+                            log_err('sendFile post-send side effect failed', ['message_id'=>(int)$msgId, 'error'=>$sideEffectError->getMessage()]);
+                        }
 
                         ok(['success' => true, 'message_id' => $msgId, 'date' => $date, 'via' => 'external_url']);
                     } catch (\Throwable $e) {
@@ -4093,7 +4146,7 @@ foreach ($normalized_items as $item) {
                 try {
                     $uploaded = $mp->upload($tmp, $name);
 
-                    if (str_starts_with($mime, 'image/') && strtolower(pathinfo($name, PATHINFO_EXTENSION)) !== 'gif') {
+                    if (!$sendAsFile && str_starts_with($mime, 'image/') && strtolower(pathinfo($name, PATHINFO_EXTENSION)) !== 'gif') {
                         $media = ['_' => 'inputMediaUploadedPhoto', 'file' => $uploaded];
                     } else {
                         $attrs = [['_' => 'documentAttributeFilename', 'file_name' => $name]];
@@ -4114,8 +4167,14 @@ foreach ($normalized_items as $item) {
 
                     [$msgId, $date] = extract_sent_message_meta($res);
                     if (!$msgId) fail('Telegram did not confirm media message', 502);
-                    proactive_cache_media($mp, (string)$peer, (int)$msgId);
-                    notify_webhook_sent_update((string)$peer, (int)$msgId, (int)$date, (string)$caption, $clientUid);
+                    // The provider-native id is durable evidence of success;
+                    // optional cache/webhook work must not erase it.
+                    try {
+                        proactive_cache_media($mp, (string)$peer, (int)$msgId);
+                        notify_webhook_sent_update((string)$peer, (int)$msgId, (int)$date, (string)$caption, $clientUid);
+                    } catch (Throwable $sideEffectError) {
+                        log_err('sendFile post-send side effect failed', ['message_id'=>(int)$msgId, 'error'=>$sideEffectError->getMessage()]);
+                    }
 
 
                     ok(['success' => true, 'message_id' => $msgId, 'date' => $date, 'via' => 'upload']);

@@ -699,13 +699,15 @@ export class ChatOutbox {
       // deliberately uses the normal sequenced path instead of pretending a
       // document bundle is a supported album.
       const isMaxBundle = providerId === 'max' && files.length > 1 && !attachmentAsFile;
-      // Telegram's sendMultiMedia accepts an album of media, not a bundle of
-      // documents. "Send as file" must therefore use independent confirmed
-      // document sends, just like MAX, rather than receiving a 500 after all
-      // bytes have already been staged server-side.
+      // Telegram's native multi-media request also accepts uploaded
+      // documents. The server selects inputMediaUploadedDocument when this
+      // checkbox is set, retaining the provider grouped_id and one durable
+      // operation instead of synthesising a file batch from sequential sends.
+      // MAX documents remain sequenced because its provider contract really
+      // lacks a document bundle.
       isNativeBatch = ['whatsapp', 'telegram'].includes(providerId)
         && files.length > 1
-        && !attachmentAsFile
+        && (providerId === 'telegram' || !attachmentAsFile)
         && typeof this.chat.api.sendMessageBatch === 'function';
       if (isMaxBundle) {
         const fd = new FormData();

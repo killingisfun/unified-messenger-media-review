@@ -57,4 +57,18 @@ const unresolved = unconfirmed._collapseLocalOutgoingDocumentBatches([
 assert.equal(unresolved.length, 3, 'unknown provider outcome cannot be visually promoted to a confirmed batch');
 assert.equal(unresolved.some(message => String(message.media_group_id || '').startsWith('local-document-batch:')), false, 'unknown outcomes retain their native ungrouped state');
 
+// Telegram gives every child a native grouped_id. This is stronger than a
+// timestamp and must keep working when an unrelated incoming message arrives
+// between two updates or when a polling page is not contiguous.
+const nativeFirst = { ...documentMessage('201', 10), media_group_id: 'tg-native-docs-1' };
+const interleaved = { id: 'in-1', direction: 'in', timestamp: 15, text: 'reply', attachments: [] };
+const nativeSecond = { ...documentMessage('202', 20), media_group_id: 'tg-native-docs-1' };
+const nativeGrouped = new ChatAlbums(makeChat([]))._collapseLocalOutgoingDocumentBatches([
+  nativeFirst, interleaved, nativeSecond,
+]);
+assert.equal(nativeGrouped.length, 2, 'an exact native document group absorbs its non-contiguous children');
+assert.equal(nativeGrouped[0].id, 'in-1', 'unrelated message remains independently ordered');
+assert.deepEqual(nativeGrouped[1]._albumMessageIds, ['201', '202'], 'native group retains both provider IDs exactly once');
+assert.equal(nativeGrouped[1]._nativeDocumentBatch, true, 'native group is distinct from local journal reconstruction');
+
 console.log('local-document-batch-history-contract-ok');
