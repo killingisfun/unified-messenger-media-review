@@ -68,7 +68,7 @@ $uiExposeProviderConfig = !$uiPreview && !$uiBridgeMode;
     <link href="js/vendor/bootstrap/css/bootstrap.min.css?v=5.3.2" rel="stylesheet">
     <link rel="stylesheet" href="js/vendor/bootstrap-icons/font/bootstrap-icons.min.css?v=1.11.3">
 
-    <link rel="stylesheet" href="js/src/ui/styles/legacy-media-shell.css?v=20260923-whatsapp-avatars-r10">
+    <link rel="stylesheet" href="js/src/ui/styles/legacy-media-shell.css?v=20261009-profile-avatar-fallback-r1">
     <link rel="stylesheet" href="js/src/ui/styles/albums.css?v=20260923-whatsapp-avatars-r10">
     <!-- Visual panel layer selectively transferred from worktree 45fc. -->
     <link rel="stylesheet" href="js/src/ui/styles/messenger.css?v=20260923-logout-r1">
@@ -104,6 +104,7 @@ $uiExposeProviderConfig = !$uiPreview && !$uiBridgeMode;
             <button type="button" class="rail-btn" data-open-connections title="Настройки подключений" aria-label="Настройки подключений" aria-expanded="false"><span data-icon="settings"></span></button>
             <button type="button" class="rail-btn infrastructure-health-button" id="infrastructure-health-button" title="Состояние инфраструктуры" aria-label="Состояние инфраструктуры" aria-expanded="false"><span data-icon="health"></span><span class="infrastructure-health-dot" aria-hidden="true"></span></button>
             <section class="infrastructure-health-panel" id="infrastructure-health-panel" role="status" aria-live="polite" hidden><strong>Проверка сервера</strong><p id="infrastructure-health-message"></p><small id="infrastructure-health-time"></small></section>
+            <button type="button" class="rail-btn" id="open-download-library" title="Открыть загрузки" aria-label="Открыть загрузки" hidden><span data-icon="mediaDownload"></span></button>
             <div class="rail-spacer"></div>
             <button type="button" class="rail-btn" id="theme-toggle" title="Сменить тему" aria-label="Включить тёмную тему"><span data-icon="moon"></span></button>
             <span class="workspace-avatar" title="Общее пространство">Я</span>
@@ -174,7 +175,7 @@ $uiExposeProviderConfig = !$uiPreview && !$uiBridgeMode;
         <div class="modal-dialog modal-dialog-centered"><div class="modal-content">
             <div class="modal-header"><h5 class="modal-title" id="contactProfileModalTitle">Сведения о контакте</h5><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Закрыть"></button></div>
             <div class="modal-body">
-                <div id="contact-profile-summary" class="d-flex align-items-center gap-3 mb-3"><img id="contact-profile-avatar" class="rounded-circle" alt=""><div><div class="fw-semibold" id="contact-profile-name">Загрузка…</div><div class="text-muted small" id="contact-profile-subtitle"></div></div></div>
+                <div id="contact-profile-summary" class="d-flex align-items-center gap-3 mb-3"><span id="contact-profile-avatar-shell" class="contact-profile-avatar-shell"><span id="contact-profile-avatar-fallback" class="contact-profile-avatar-fallback" aria-hidden="true">?</span><img id="contact-profile-avatar" class="rounded-circle" alt=""></span><div><div class="fw-semibold" id="contact-profile-name">Загрузка…</div><div class="text-muted small" id="contact-profile-subtitle"></div></div></div>
                 <div class="profile-skeleton" role="status" aria-label="Загрузка сведений аккаунта"><div class="profile-skeleton-avatar"></div><div class="profile-skeleton-lines"><span></span><span></span><span></span></div></div>
                 <div id="contact-profile-loading" class="text-center py-3"><span class="spinner-border spinner-border-sm"></span></div>
                 <div id="contact-profile-fields"></div>
@@ -317,7 +318,7 @@ $uiExposeProviderConfig = !$uiPreview && !$uiBridgeMode;
 
     <!-- ======== Скрипты ======== -->
     <script src="js/vendor/bootstrap/js/bootstrap.bundle.min.js?v=5.3.2"></script>
-<script type="module" src="js/src/app/index.js?v=20261007-desktop-realtime-r1"></script>
+<script type="module" src="js/src/app/index.js?v=20261009-profile-avatar-fallback-r1"></script>
 
    
 </body>

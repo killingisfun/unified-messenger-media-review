@@ -1161,6 +1161,23 @@ function log_err(string $msg, array $ctx = []): void
         error_log('[rest_errors] ' . $content);
     }
 }
+
+/**
+ * A desktop-generated trace id follows one binary request across the native
+ * WebView relay and this server. It contains no credentials or media URL and
+ * is deliberately ignored for all normal/legacy calls.
+ */
+function tg_media_trace(string $event, array $context = []): void
+{
+    $trace = (string)($_SERVER['HTTP_X_UNIFIED_MEDIA_TRACE'] ?? '');
+    if (!preg_match('/^d[0-9a-f]{1,16}-[0-9a-f]{1,16}$/D', $trace)) return;
+    log_err('telegram_media_trace ' . $event, ['trace' => $trace] + $context);
+}
+
+function tg_media_trace_peer(string $peer): string
+{
+    return substr(hash('sha256', $peer), 0, 12);
+}
 function ensure_dirs(): void
 {
     foreach ([dirname(SESSION), TMPDIR, CACHE_DIR, AVA_DIR, TG_ALBUM_BUCKET_DIR] as $d) {
@@ -4416,6 +4433,9 @@ case 'getMessagesReactions': {
                 $peer = (string)($_GET['chatId'] ?? '');
                 $mid  = (int)($_GET['messageId'] ?? 0);
                 if ($peer === '' || $mid <= 0) fail('chatId and messageId are required');
+                $isDesktopVideoPoster = strtolower((string)($_GET['kind'] ?? '')) === 'video';
+                $traceContext = ['peer_hash' => tg_media_trace_peer($peer), 'mid' => $mid, 'kind' => $isDesktopVideoPoster ? 'video' : 'other'];
+                tg_media_trace('thumb_start', $traceContext);
 
                 $cacheDir  = rtrim(TMPDIR, '/') . '/cache';
                 if (!is_dir($cacheDir)) @mkdir($cacheDir, 0777, true);
@@ -4424,6 +4444,7 @@ case 'getMessagesReactions': {
                 // --- HEAD: отвечаем по кэшу, иначе 404 ---
                 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'HEAD') {
                     if (is_file($thumbPath) && filesize($thumbPath) > 0 && !tg_is_thumbnail_placeholder($thumbPath)) {
+                        tg_media_trace('thumb_head_cache', $traceContext + ['bytes' => (int)filesize($thumbPath)]);
                         header('Content-Type: ' . detect_mime($thumbPath, true, 'image/jpeg'));
                         header('Content-Length: ' . (string)filesize($thumbPath));
                         exit;
@@ -4434,6 +4455,7 @@ case 'getMessagesReactions': {
 
                 // 1) кэш есть — отдаем сразу
                 if (is_file($thumbPath) && filesize($thumbPath) > 0 && !tg_is_thumbnail_placeholder($thumbPath)) {
+                    tg_media_trace('thumb_cache', $traceContext + ['bytes' => (int)filesize($thumbPath)]);
                     header('Content-Type: ' . detect_mime($thumbPath, true, 'image/jpeg'));
                     header('Content-Length: ' . (string)filesize($thumbPath));
                     readfile($thumbPath);
@@ -4447,7 +4469,10 @@ case 'getMessagesReactions': {
                 // 2) если кэша нет — пробуем скачать превью из сообщения
                 $png = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=');
 
-                $mp = start_madeline_locked();
+                // Video posters must use the listener's IPC client just like
+                // video ranges. Otherwise a thumbnail can wait behind the
+                // legacy session flock while the visible player is loading.
+                $mp = $isDesktopVideoPoster ? start_madeline_media_ipc_client() : start_madeline_locked();
                 try {
                     $m = $mp->messages->getMessages(['peer' => $peer, 'id' => [$mid]])['messages'][0] ?? null;
 
@@ -4475,6 +4500,7 @@ case 'getMessagesReactions': {
                     }
 
                     if ($m === null || empty($m['media'])) {
+                        tg_media_trace('thumb_placeholder_missing_message', $traceContext);
                         header('X-Unified-Telegram-Thumbnail-Placeholder: 1');
                         header('Content-Type: image/png');
                         header('Content-Length: ' . (string)strlen($png));
@@ -4523,12 +4549,14 @@ case 'getMessagesReactions': {
 
                         if ($downloaded && is_file($tmp) && filesize($tmp) > 0 && str_starts_with(detect_mime($tmp), 'image/')) {
                             @rename($tmp, $thumbPath);
+                            tg_media_trace('thumb_ready', $traceContext + ['bytes' => (int)filesize($thumbPath)]);
                             header('Content-Type: ' . detect_mime($thumbPath, true, 'image/jpeg'));
                             header('Content-Length: ' . (string)filesize($thumbPath));
                             readfile($thumbPath);
                             exit;
                         }
                     } catch (\Throwable $e) {
+                        tg_media_trace('thumb_error', $traceContext + ['error' => get_class($e)]);
                         log_err('downloadThumb: Download FAILED', ['peer' => $peer, 'mid' => $mid, 'error' => $e->getMessage()]);
                     } finally {
                         if (is_file($tmp)) @unlink($tmp);
@@ -4539,6 +4567,7 @@ case 'getMessagesReactions': {
                     // video thumb is available through getHistory on the next
                     // read. A transparent PNG is only a one-request fallback.
                     header('X-Unified-Telegram-Thumbnail-Placeholder: 1');
+                    tg_media_trace('thumb_placeholder_unavailable', $traceContext);
                     header('Content-Type: image/png');
                     header('Content-Length: ' . (string)strlen($png));
                     echo $png;
@@ -4555,11 +4584,14 @@ case 'getMessagesReactions': {
                 if ($peer === '' || $mid <= 0) fail('chatId and messageId are required');
                 $asAttachment = (int)($_GET['dl'] ?? 0) === 1;
                 $isDesktopVideo = strtolower((string)($_GET['kind'] ?? '')) === 'video';
+                $traceContext = ['peer_hash' => tg_media_trace_peer($peer), 'mid' => $mid, 'kind' => $isDesktopVideo ? 'video' : 'other'];
+                tg_media_trace('media_start', $traceContext);
                 $disposition = $asAttachment ? 'attachment' : 'inline';
                 $cacheDir = rtrim(TMPDIR, '/') . '/cache';
                 $cachePath = $cacheDir . '/' . sha1($peer . '#' . $mid);
                 $cacheMeta = tg_read_media_cache_metadata($cachePath);
                 if (tg_media_cache_is_complete($cachePath)) {
+                    tg_media_trace('media_cache', $traceContext + ['bytes' => (int)@filesize($cachePath)]);
                     tg_media_stream_cached_file(
                         $cachePath,
                         $cacheMeta['mime'] !== '' ? $cacheMeta['mime'] : detect_mime($cachePath, true, 'application/octet-stream'),
@@ -4666,6 +4698,7 @@ case 'getMessagesReactions': {
                             $start = $isPartial ? (int)$plan['start'] : 0;
                             $end = $isPartial ? (int)$plan['end'] : $total - 1;
                             $length = $isPartial ? (int)$plan['length'] : $total;
+                            tg_media_trace('media_headers', $traceContext + ['status' => $isPartial ? 206 : 200, 'start' => $start, 'length' => $length, 'total' => $total]);
 
                             http_response_code($isPartial ? 206 : 200);
                             header('Content-Type: ' . $mime);
@@ -4717,6 +4750,7 @@ case 'getMessagesReactions': {
                                 if ($bytesStreamed !== $length) {
                                     throw new \RuntimeException('Telegram media range length mismatch');
                                 }
+                                tg_media_trace('media_complete', $traceContext + ['bytes' => $bytesStreamed, 'total' => $total]);
                                 if (is_resource($sink)) {
                                     fclose($sink);
                                     $sink = false;
@@ -4744,6 +4778,9 @@ case 'getMessagesReactions': {
                     } finally {
                         finish_madeline_locked($mp);
                     }
+                } catch (\Throwable $e) {
+                    tg_media_trace('media_error', $traceContext + ['error' => get_class($e)]);
+                    throw $e;
                 } finally {
                     if (is_resource($lock)) {
                         @flock($lock, LOCK_UN);

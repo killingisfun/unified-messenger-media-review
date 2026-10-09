@@ -158,7 +158,9 @@
 
         .contact-trigger { cursor: pointer; border: 0; background: transparent; padding: 0; text-align: left; color: inherit; }
         .contact-trigger:hover #chat-title { text-decoration: underline; }
-        #contact-profile-avatar { width: 74px; height: 74px; object-fit: cover; }
+        .contact-profile-avatar-shell { position: relative; display: block; width: 74px; height: 74px; flex: 0 0 74px; border-radius: 50%; overflow: hidden; }
+        #contact-profile-avatar { position: relative; z-index: 1; width: 74px; height: 74px; object-fit: cover; }
+        .contact-profile-avatar-fallback { position: absolute; inset: 0; display: grid; place-items: center; border-radius: 50%; background: #ddefe8; color: #3d5666; font-size: 26px; font-weight: 600; line-height: 1; }
         .contact-profile-field { padding: .55rem 0; border-bottom: 1px solid #edf0f2; }
         .contact-profile-field:last-child { border-bottom: 0; }
         .contact-profile-label { font-size: .78rem; color: #6c757d; }

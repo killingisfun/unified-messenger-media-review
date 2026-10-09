@@ -334,7 +334,15 @@ export class MessageRenderer {
     if (isAlbumFromBackend) el.classList.add('album');
     const rawBodyText = String(msg.text || '').trim();
     const isServiceMediaPlaceholder = backendMedia.length > 0 && /^\[(?:Изображение|Фото|Видео|Аудио|Файл|Стикер|Вложение)\](?:\s+.*)?$/i.test(rawBodyText);
-    const bodyText = (this.chat._looksLikeInlineMediaText(rawBodyText) || isServiceMediaPlaceholder)
+    // Older cached VK rows used an invented `Пустое сообщение` text whenever
+    // an attachment was discarded. Once current history has restored that
+    // attachment, the exact sentinel is no longer message content. Scope it
+    // to VK plus a present attachment so ordinary text-only messages remain
+    // untouched, including messages from all other providers.
+    const isLegacyVkPrivateVideoPlaceholder = getProvider(this.chat.source).id === 'vk'
+      && rawBodyText === 'Пустое сообщение'
+      && backendMedia.length > 0;
+    const bodyText = (this.chat._looksLikeInlineMediaText(rawBodyText) || isServiceMediaPlaceholder || isLegacyVkPrivateVideoPlaceholder)
       ? ''
       : (rawBodyText.length ? this.chat.linkify(rawBodyText) : '');
     let attachmentsHtml = '';
@@ -371,8 +379,15 @@ export class MessageRenderer {
         if (m.startsWith('audio/')) return 'audio';
         return 'file';
       };
-      const attachmentType = motionKind(att) === 'animation-image' ? 'photo' : normalizeAttType(att);
-      const motion = motionKind(att);
+      const detectedMotion = motionKind(att);
+      // A video note is a playable video stream, not a sticker. Render it
+      // through the shared video contract so merely scrolling cannot start
+      // downloading it. Animated stickers and GIF-like motion keep their
+      // existing autoplay behaviour.
+      const motion = detectedMotion === 'note' ? '' : detectedMotion;
+      const attachmentType = detectedMotion === 'animation-image'
+        ? 'photo'
+        : detectedMotion === 'note' ? 'video' : normalizeAttType(att);
       if (attachmentType === 'link') {
         const href = this.chat._safeRemoteUrl(att.external_url || att.url || '');
         const title = String(att.title || att.site_name || href || 'Ссылка');
@@ -437,18 +452,36 @@ export class MessageRenderer {
         const isVideoNote = att.video_note === true || Number(att.video_type) === 1;
         const videoHolderClass = `media-holder video-holder${isVideoNote ? ' video-note' : ''}`;
         const videoLabel = isVideoNote ? 'Видеосообщение' : 'Видео';
+        if (att.playback_unavailable === true) {
+          const durationSeconds = Math.max(0, Number(att.duration) || 0);
+          const duration = durationSeconds > 0
+            ? `${Math.floor(durationSeconds / 60)}:${String(Math.floor(durationSeconds % 60)).padStart(2, '0')}`
+            : '';
+          const title = this.chat._escapeHtml(String(att.title || 'Видео VK'));
+          // VK has not supplied a playable URL for this private video.  Do
+          // not try its transient preview URL: the generic lazy loader would
+          // turn one denied request into a broken-image icon and an alarming
+          // media error.  A stable in-app card is more honest and does not
+          // create background requests while the user reads the chat.
+          return `<div class="${videoHolderClass} vk-provider-video" data-provider-video="vk"><div class="video-player vk-provider-video-frame" data-media-state="restricted" role="img" aria-label="${title}: доступ ограничен"><i class="bi bi-camera-video-fill vk-provider-video-icon" aria-hidden="true"></i><span class="vk-provider-video-lock" aria-hidden="true"><i class="bi bi-lock-fill"></i></span><span class="vk-provider-video-title">${title}</span>${duration ? `<span class="vk-provider-video-duration">${duration}</span>` : ''}</div><div class="media-provider-note"><i class="bi bi-shield-lock" aria-hidden="true"></i><span>Видеозапись с ограниченным доступом</span></div></div>`;
+        }
         if (att.unavailable) {
           const niceName = this.chat._pickDownloadName(filename, att.mime, lbHref);
           const downloadUrl = this.chat._withDlParam(this.chat._withNameParam(att.download || lbHref, niceName));
           return `<div class="${videoHolderClass}"><div class="video-player" data-media-state="error"><div class="media-error" role="status"><span>${att.unavailable_label || `${videoLabel} недоступно`}</span></div></div><div class="media-actions"><a class="media-download" href="${downloadUrl}" download="${niceName}"><i class="bi bi-download" aria-hidden="true"></i><span>Попробовать скачать</span></a></div></div>`;
         }
-        // Telegram supplies a lightweight still frame separately from the
-        // MP4. The desktop relay keeps that request as an image-only route,
-        // so a missing poster can never be replaced with video bytes.
-        const poster = att.preview || att.thumbnail || '';
-        const posterAttr = poster ? ` data-lazy-poster="${this.chat._escapeHtml(poster)}"` : '';
+        // Every provider shares this stream boundary. A real thumbnail is
+        // preferred, but a generated static play surface keeps a video with
+        // no provider preview from probing MP4 bytes during scrolling.
+        const poster = att.preview || att.thumbnail || this.chat._videoPoster;
+        const posterAttr = ` data-lazy-poster="${this.chat._escapeHtml(poster)}"`;
+        const deferredAttr = ' data-defer-video="1"';
+        // The source remains only in data-lazy-src until explicit Play.
+        // This lets Chromium request normal byte ranges after activation,
+        // without opening a full media response for timeline rendering.
+        const preload = 'none';
         const src = displayUrl || '';
-        return `<div class="${videoHolderClass}"><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="metadata"${posterAttr} aria-label="${videoLabel} ${filename}" data-lazy="1" data-fallback-label="${this.chat._escapeHtml(filename)}" data-download-url="${this.chat._withDlParam(lbHref)}"><source data-lazy-src="${src}" type="${att.mime || 'video/mp4'}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${this.chat._withDlParam(lbHref)}" download="${filename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
+        return `<div class="${videoHolderClass}"><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr} aria-label="${videoLabel} ${filename}" data-lazy="1" data-fallback-label="${this.chat._escapeHtml(filename)}" data-download-url="${this.chat._withDlParam(lbHref)}"><source data-lazy-src="${src}" type="${att.mime || 'video/mp4'}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${this.chat._withDlParam(lbHref)}" download="${filename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
       }
       if (attachmentType === 'audio') {
         const src = displayUrl || '';
@@ -464,12 +497,16 @@ export class MessageRenderer {
         return `<div class="message-sticker"><img class="msg-sticker" alt="Стикер" data-lazy-src="${src}"><a class="tile-dl" href="${downloadUrl}" download="${niceName}" title="Скачать стикер"><i class="bi bi-download"></i></a></div>`;
       }
       if (attachmentType === 'file') {
-        const raw = att.download || att.public_url || openUrl || displayUrl || att.url || '#';
+        const providedDownload = att.download || att.public_url || openUrl || displayUrl || att.url || '';
+        const raw = providedDownload || '#';
         const niceName = this.chat._pickDownloadName(filename, att.mime, raw);
         const open = this.chat._toLightboxOpenUrl(raw, niceName);
         const dl = this.chat._withDlParam(this.chat._withNameParam(raw, niceName));
         if (att.unavailable) {
-          return `<div class="msg-file attachment-card unavailable"><span class="attachment-thumb-placeholder"><i class="bi bi-file-earmark-x"></i></span><span class="file-meta"><span class="file-name">${niceName}</span><span class="file-kind">${att.unavailable_label || 'Превью недоступно'}</span></span><a class="attachment-download" href="${dl}" download="${niceName}" title="Скачать файл"><i class="bi bi-download"></i></a></div>`;
+          const download = providedDownload
+            ? `<a class="attachment-download" href="${dl}" download="${niceName}" title="Скачать файл"><i class="bi bi-download"></i></a>`
+            : '';
+          return `<div class="msg-file attachment-card unavailable"><span class="attachment-thumb-placeholder"><i class="bi bi-file-earmark-x"></i></span><span class="file-meta"><span class="file-name">${niceName}</span><span class="file-kind">${att.unavailable_label || 'Превью недоступно'}</span></span>${download}</div>`;
         }
         // A document URL is often a PDF/office archive, not an image. Never
         // feed it to <img>: a broken-image icon looks like a loading failure.
@@ -595,9 +632,14 @@ export class MessageRenderer {
     const actionsHtml = renderMessageActions(this.chat.source, msg, this.chat.providerCapabilities);
     const isOptimisticPhotoBatch = isOptimistic && isOut && isAlbumFromBackend && otherAttachments.length === 0;
     const hasVideo = backendMedia.some(a => String(a.type || '').toLowerCase() === 'video' || String(a.mime || '').startsWith('video/'));
+    const hasRestrictedVkVideo = backendMedia.some(a => a?.playback_unavailable === true);
     const hasPhotoCaption = (photoAttachments.length > 0 || hasVideo) && Boolean(bodyText);
     el.classList.toggle('has-media-caption', hasPhotoCaption);
     el.classList.toggle('is-single-video', hasVideo && backendMedia.length === 1);
+    // A forwarded VK message can contain several private videos. They remain
+    // distinct cards, but must use the same readable column as a standalone
+    // video instead of inheriting the narrow text-bubble width.
+    el.classList.toggle('has-restricted-vk-video', hasRestrictedVkVideo);
     const reservedAlbumDownload = isOptimisticPhotoBatch ? `
         <div class="media-actions text-center mt-2">
             <button type="button" class="btn btn-sm btn-outline-secondary album-download-all" disabled aria-disabled="true" title="Будет доступно после подтверждения">

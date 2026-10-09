@@ -113,16 +113,39 @@ import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
             }
         }
 
-        function setProfileAvatar(url) {
+        function profileAvatarInitials(value) {
+            const label = String(value || 'Контакт').trim();
+            if (label.startsWith('@')) return Array.from(label.slice(1)).slice(0, 2).join('').toUpperCase() || 'К';
+            return label.split(/\s+/).slice(0, 2)
+                .map((part) => Array.from(part)[0] || '')
+                .join('').toUpperCase() || 'К';
+        }
+
+        function setProfileAvatar(url, fallbackName = '') {
             const avatar = document.getElementById('contact-profile-avatar');
+            const fallback = document.getElementById('contact-profile-avatar-fallback');
             if (!avatar) return;
-            avatar.style.visibility = 'hidden';
-            avatar.onload = () => { avatar.style.visibility = 'visible'; };
-            avatar.onerror = () => { avatar.style.visibility = 'hidden'; };
-            if (url) {
-                avatar.src = url;
-                if (avatar.complete && avatar.naturalWidth > 0) avatar.style.visibility = 'visible';
-            } else avatar.removeAttribute('src');
+            const showFallback = () => {
+                avatar.style.visibility = 'hidden';
+                if (fallback) {
+                    fallback.textContent = profileAvatarInitials(fallbackName);
+                    fallback.hidden = false;
+                }
+            };
+            const source = String(url || '').trim();
+            avatar.onload = () => {
+                avatar.style.visibility = 'visible';
+                if (fallback) fallback.hidden = true;
+            };
+            avatar.onerror = showFallback;
+            if (!source || /^(?:javascript|vbscript):/i.test(source)) {
+                avatar.removeAttribute('src');
+                showFallback();
+                return;
+            }
+            showFallback();
+            avatar.src = source;
+            if (avatar.complete && avatar.naturalWidth > 0) avatar.onload();
         }
 
         // The profile request is often the first endpoint that returns a
@@ -166,7 +189,7 @@ import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
             const isChannel = kind === 'channel';
             if (modalTitle) modalTitle.textContent = context.modalTitle || (isChannel ? 'Сведения о канале' : isGroup ? 'Сведения о группе' : 'Сведения о контакте');
             applyProfileAvatarToChatShell(profile, context);
-            setProfileAvatar(originalAvatar(profile?.avatar, profile?.avatar_url, context.self || context.fallbackAvatar === false ? '' : document.getElementById('chat-avatar')?.getAttribute('src')) || chatAvatar(context));
+            setProfileAvatar(originalAvatar(profile?.avatar, profile?.avatar_url, context.self || context.fallbackAvatar === false ? '' : document.getElementById('chat-avatar')?.getAttribute('src')) || chatAvatar(context), profile?.name || context.title);
             const items = Array.isArray(profile?.fields) ? profile.fields : [];
             const origin = String(profile?.origin || '');
             if (fields) {
@@ -291,7 +314,7 @@ import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
             if (modalTitle) modalTitle.textContent = 'Сведения о контакте';
             if (name) name.textContent = context.title;
             if (subtitle) subtitle.textContent = context.source;
-            setProfileAvatar(document.getElementById('chat-avatar')?.getAttribute('src'));
+            setProfileAvatar(document.getElementById('chat-avatar')?.getAttribute('src'), context.title);
             if (loading) loading.classList.remove('d-none');
             if (fields) fields.innerHTML = '';
             if (notice) { notice.textContent = ''; notice.classList.add('d-none'); }
@@ -357,7 +380,7 @@ import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
             if (title) title.textContent = context.modalTitle;
             if (name) name.textContent = context.title;
             if (subtitle) subtitle.textContent = `Пользователь ${source}`;
-            setProfileAvatar(String(detail?.avatar || ''));
+            setProfileAvatar(String(detail?.avatar || ''), context.title);
             if (loading) loading.classList.remove('d-none');
             if (fields) fields.innerHTML = '';
             if (notice) { notice.textContent = ''; notice.classList.add('d-none'); }
@@ -393,7 +416,7 @@ import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
             if (modalTitle) modalTitle.textContent = 'Мой аккаунт';
             if (name) name.textContent = 'Мой аккаунт';
             if (subtitle) subtitle.textContent = context.source;
-            setProfileAvatar('');
+            setProfileAvatar('', 'Мой аккаунт');
             if (loading) loading.classList.remove('d-none');
             if (fields) fields.innerHTML = '';
             if (notice) { notice.textContent = ''; notice.classList.add('d-none'); }

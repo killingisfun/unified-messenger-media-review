@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.IO;
+using System.IO.Compression;
 
 namespace UnifiedMessenger.Desktop.Services;
 
@@ -24,6 +25,7 @@ public sealed class DesktopUiHost : IDisposable
     // posters and range probes for thirty seconds. The server listener owns
     // the Madeline session and multiplexes the actual media reads over IPC.
     private readonly SemaphoreSlim _telegramMediaOpenGate = new(3, 3);
+    private static long _telegramMediaTraceSequence;
     private CoreWebView2? _webView;
     private bool _disposed;
 
@@ -49,6 +51,130 @@ public sealed class DesktopUiHost : IDisposable
     }
 
     public Uri StartUri => new($"https://{VirtualHost}/main.php");
+
+    /// <summary>
+    /// Creates an archive without exposing the device credential or provider
+    /// URLs to JavaScript. Each source is opened through the same bounded
+    /// desktop facade as the visible UI and copied directly into the ZIP.
+    /// </summary>
+    public async Task<DesktopArchiveResult> CreateArchiveAsync(
+        DesktopArchiveRequest request,
+        DesktopDownloadLibrary library,
+        IProgress<DesktopArchiveProgress>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        var archiveName = DesktopDownloadLibrary.NormalizeFileName(request.ArchiveName);
+        if (!archiveName.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)) archiveName += ".zip";
+        var finalPath = library.ReservePath(archiveName);
+        var temporaryPath = finalPath + ".partial";
+        var entryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var completed = 0;
+        var added = 0;
+        var failures = new List<string>();
+
+        try
+        {
+            await using (var output = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+            using (var archive = new ZipArchive(output, ZipArchiveMode.Create, leaveOpen: false))
+            {
+                foreach (var item in request.Files)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    try
+                    {
+                        using var response = await OpenArchiveMediaAsync(item.Source, cancellationToken);
+                        if (!response.IsSuccessStatusCode)
+                            throw new HttpRequestException($"HTTP {(int)response.StatusCode}");
+                        var entry = archive.CreateEntry(
+                            UniqueArchiveEntryName(ResolveDownloadedName(item.Name, response), entryNames),
+                            CompressionLevel.Fastest);
+                        await using var entryStream = entry.Open();
+                        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+                        await source.CopyToAsync(entryStream, 81920, cancellationToken);
+                        added += 1;
+                        RecordTransport("archive_item", (int)response.StatusCode, $"added={added}");
+                    }
+                    catch (Exception exception) when (exception is not OperationCanceledException)
+                    {
+                        if (failures.Count < 5) failures.Add(DesktopDownloadLibrary.NormalizeFileName(item.Name));
+                        // Keep enough structural information to distinguish a
+                        // rejected local route from a remote/provider error,
+                        // without writing source URLs or credentials to disk.
+                        RecordTransport("archive_item", 0,
+                            $"failed={completed + 1}:{exception.GetType().Name}:{SafeDiagnostic(exception.Message)}");
+                    }
+                    finally
+                    {
+                        completed += 1;
+                        progress?.Report(new DesktopArchiveProgress(completed, request.Files.Count, added));
+                    }
+                }
+            }
+
+            if (added == 0)
+                return new DesktopArchiveResult(false, "Не удалось получить ни одного файла для архива.", null, 0, failures);
+
+            File.Move(temporaryPath, finalPath, overwrite: false);
+            RecordTransport("archive_complete", 200, $"added={added} failed={failures.Count}");
+            return new DesktopArchiveResult(true, null, Path.GetFileName(finalPath), added, failures);
+        }
+        catch (OperationCanceledException)
+        {
+            return new DesktopArchiveResult(false, "Создание архива отменено.", null, added, failures);
+        }
+        catch (Exception exception)
+        {
+            RecordTransport("archive_complete", 0, exception.GetType().Name);
+            return new DesktopArchiveResult(false, "Не удалось создать архив.", null, added, failures);
+        }
+        finally
+        {
+            library.ReleasePath(finalPath);
+            try { if (File.Exists(temporaryPath)) File.Delete(temporaryPath); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// Saves one attachment through the same native, authenticated media
+    /// boundary used for archives. This deliberately avoids WebView's Edge
+    /// download manager, which otherwise owns the folder and error reporting.
+    /// </summary>
+    public async Task<DesktopDownloadResult> SaveMediaAsync(
+        DesktopDownloadRequest request,
+        DesktopDownloadLibrary library,
+        CancellationToken cancellationToken = default)
+    {
+        string? finalPath = null;
+        string? temporaryPath = null;
+        try
+        {
+            using var response = await OpenArchiveMediaAsync(request.Source, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+                throw new HttpRequestException($"HTTP {(int)response.StatusCode}");
+            finalPath = library.ReservePath(ResolveDownloadedName(request.Name, response));
+            temporaryPath = finalPath + ".partial";
+            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
+            await using (var output = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true))
+                await source.CopyToAsync(output, 81920, cancellationToken);
+            File.Move(temporaryPath, finalPath, overwrite: false);
+            RecordTransport("download_item", (int)response.StatusCode, "saved=1");
+            return new DesktopDownloadResult(true, null, Path.GetFileName(finalPath));
+        }
+        catch (OperationCanceledException)
+        {
+            return new DesktopDownloadResult(false, "Загрузка отменена.", null);
+        }
+        catch (Exception exception)
+        {
+            RecordTransport("download_item", 0, $"failed:{exception.GetType().Name}:{SafeDiagnostic(exception.Message)}");
+            return new DesktopDownloadResult(false, "Не удалось скачать файл.", null);
+        }
+        finally
+        {
+            if (finalPath is not null) library.ReleasePath(finalPath);
+            try { if (temporaryPath is not null && File.Exists(temporaryPath)) File.Delete(temporaryPath); } catch { }
+        }
+    }
 
     private void WebResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs eventArgs)
     {
@@ -177,10 +303,12 @@ public sealed class DesktopUiHost : IDisposable
         if (rangeHeaders is null)
             return CreateTextResponse("Range not satisfiable", 416, "Range Not Satisfiable", "text/plain; charset=utf-8");
         parameters["telegram_action"] = action;
+        var trace = CreateTelegramMediaTrace(parameters);
+        var requestHeaders = CreateTelegramMediaRequestHeaders(rangeHeaders, trace);
         return await CreateTelegramMediaResponseAsync(
             () => SendTelegramMediaWithThumbnailFallbackAsync(
-                new HttpMethod(request.Method), parameters, requestHeaders: rangeHeaders),
-            request.Method);
+                new HttpMethod(request.Method), parameters, requestHeaders: requestHeaders),
+            request.Method, trace, DescribeTelegramMedia(parameters, rangeHeaders));
     }
 
     private async Task<CoreWebView2WebResourceResponse> ForwardTelegramDownloadAsync(CoreWebView2WebResourceRequest request, Uri requestUri)
@@ -218,20 +346,25 @@ public sealed class DesktopUiHost : IDisposable
         var canFallbackToOriginalImage = source.TryGetValue("kind", out var kind)
             && (kind.Equals("photo", StringComparison.OrdinalIgnoreCase)
                 || kind.Equals("image", StringComparison.OrdinalIgnoreCase));
+        var trace = CreateTelegramMediaTrace(parameters);
+        var requestHeaders = CreateTelegramMediaRequestHeaders(rangeHeaders, trace);
         return await CreateTelegramMediaResponseAsync(
             () => SendTelegramMediaWithThumbnailFallbackAsync(
-                new HttpMethod(request.Method), parameters, canFallbackToOriginalImage, rangeHeaders),
-            request.Method);
+                new HttpMethod(request.Method), parameters, canFallbackToOriginalImage, requestHeaders),
+            request.Method, trace, DescribeTelegramMedia(parameters, rangeHeaders));
     }
 
     private async Task<CoreWebView2WebResourceResponse> CreateTelegramMediaResponseAsync(
         Func<Task<HttpResponseMessage>> send,
-        string requestMethod)
+        string requestMethod,
+        string trace,
+        string description)
     {
         var acquiredGate = false;
         HttpResponseMessage? response = null;
         try
         {
+            RecordTransport("telegram_media_begin", 0, $"trace={trace} {description}");
             using var queueTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
             try
             {
@@ -240,7 +373,7 @@ public sealed class DesktopUiHost : IDisposable
             }
             catch (OperationCanceledException) when (queueTimeout.IsCancellationRequested)
             {
-                RecordTransport("telegram_media_queue", 503, requestMethod);
+                RecordTransport("telegram_media_queue", 503, $"trace={trace} {description}");
                 return CreateTextResponse(
                     "Telegram media queue timed out; retry the request.",
                     503,
@@ -248,7 +381,11 @@ public sealed class DesktopUiHost : IDisposable
                     "text/plain; charset=utf-8");
             }
             response = await send();
-            RecordTransport("telegram_media", (int)response.StatusCode, requestMethod);
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? "none";
+            var contentLength = response.Content.Headers.ContentLength?.ToString() ?? "unknown";
+            var contentRange = response.Content.Headers.ContentRange?.ToString() ?? "none";
+            RecordTransport("telegram_media_headers", (int)response.StatusCode,
+                $"trace={trace} {description} type={contentType} length={contentLength} range={contentRange}");
             var stream = await response.Content.ReadAsStreamAsync();
             // Only opening a response is serialized. The body is consumed by
             // WebView independently and must never keep unrelated Telegram
@@ -263,6 +400,8 @@ public sealed class DesktopUiHost : IDisposable
             var ownedStream = new ResponseOwnedStream(
                 stream,
                 ownedResponse,
+                bytesRead => RecordTransport("telegram_media_body", 0,
+                    $"trace={trace} {description} bytes={bytesRead} expected={contentLength}"),
                 contentLength: ownedResponse.Content.Headers.ContentLength,
                 readTimeout: TimeSpan.FromSeconds(30));
             try
@@ -284,6 +423,43 @@ public sealed class DesktopUiHost : IDisposable
             response?.Dispose();
             if (acquiredGate) _telegramMediaOpenGate.Release();
         }
+    }
+
+    private static string CreateTelegramMediaTrace(Dictionary<string, string> parameters)
+    {
+        // This identifier is intentionally unrelated to credentials, message
+        // text, or a provider URL. It joins the native transport record with
+        // the server-side media trace for one browser request.
+        var sequence = Interlocked.Increment(ref _telegramMediaTraceSequence);
+        var trace = $"d{sequence:x}-{Environment.TickCount64:x}";
+        parameters["trace"] = trace;
+        return trace;
+    }
+
+    private static IReadOnlyDictionary<string, string> CreateTelegramMediaRequestHeaders(
+        IReadOnlyDictionary<string, string> rangeHeaders,
+        string trace)
+    {
+        var headers = new Dictionary<string, string>(rangeHeaders, StringComparer.OrdinalIgnoreCase)
+        {
+            ["X-Unified-Media-Trace"] = trace,
+        };
+        return headers;
+    }
+
+    private static string DescribeTelegramMedia(
+        IReadOnlyDictionary<string, string> parameters,
+        IReadOnlyDictionary<string, string> requestHeaders)
+    {
+        var action = parameters.TryGetValue("telegram_action", out var value) ? value : "unknown";
+        var kind = parameters.TryGetValue("kind", out var mediaKind) ? mediaKind : "unknown";
+        var range = requestHeaders.TryGetValue("Range", out var requestedRange) ? requestedRange : "full";
+        // The local trace contains only bounded numeric identifiers; it is not
+        // sent to the UI and makes a stalled tile diagnosable without media
+        // URLs or device credentials in logs.
+        var chat = parameters.TryGetValue("chatId", out var chatId) ? chatId : "unknown";
+        var message = parameters.TryGetValue("messageId", out var messageId) ? messageId : "unknown";
+        return $"method={action} kind={kind} chat={chat} message={message} range={range}";
     }
 
     /// <summary>
@@ -395,6 +571,142 @@ public sealed class DesktopUiHost : IDisposable
             response.ReasonPhrase ?? "OK", BuildResponseHeaders(response));
     }
 
+    private async Task<HttpResponseMessage> OpenArchiveMediaAsync(Uri requestUri, CancellationToken cancellationToken)
+    {
+        if (!requestUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)
+            || !requestUri.Host.Equals(VirtualHost, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Archive media URL is not trusted.");
+
+        var parameters = ParseQuery(requestUri.Query);
+        RecordTransport("archive_open", 0, DescribeArchiveSource(requestUri, parameters));
+        if (requestUri.AbsolutePath.Equals("/media_stream.php", StringComparison.OrdinalIgnoreCase)
+            || requestUri.AbsolutePath.Equals("/media_proxy.php", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!parameters.Remove("u", out var upstream)
+                || !IsTrustedExternalMediaUri(upstream)
+                || !ExternalMediaParametersAreValid(parameters))
+                throw new InvalidOperationException("Archive external media URL is invalid.");
+            parameters["u"] = upstream;
+            return await _api.SendApiAsync(HttpMethod.Get, "stream_external_media", parameters, cancellationToken: cancellationToken);
+        }
+
+        if (requestUri.AbsolutePath.Equals("/max_api.php", StringComparison.OrdinalIgnoreCase))
+        {
+            // `dl` and `name` are presentation-only parameters added by the
+            // shared UI. The native host already owns the final file name;
+            // never forward either value to MAX, but accept the same bounded
+            // download URL that the browser UI emits.
+            parameters.Remove("dl");
+            parameters.Remove("name");
+            if (!parameters.Remove("resource", out var resource) || resource != "media"
+                || !parameters.Remove("ref", out var mediaRef) || !MaxMediaRefPattern.IsMatch(mediaRef)
+                || parameters.Any(pair => pair.Key != "r" || !CacheBusterPattern.IsMatch(pair.Value)))
+                throw new InvalidOperationException("Archive MAX media URL is invalid.");
+            return await _api.SendApiAsync(HttpMethod.Get, "max_media",
+                new Dictionary<string, string>(StringComparer.Ordinal) { ["ref"] = mediaRef }, cancellationToken: cancellationToken);
+        }
+
+        if (requestUri.AbsolutePath.Equals("/telegram_download.php", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!parameters.TryGetValue("chat_id", out var chatId) || !TelegramChatIdPattern.IsMatch(chatId)
+                || !parameters.TryGetValue("message_id", out var messageId) || !TelegramMessageIdPattern.IsMatch(messageId)
+                || parameters.Any(pair => pair.Key is not ("chat_id" or "message_id" or "name" or "inline" or "dl" or "thumb" or "kind" or "r"))
+                || !TelegramOptionalFlagValuesAreValid(parameters))
+                throw new InvalidOperationException("Archive Telegram media URL is invalid.");
+            var telegram = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["telegram_action"] = parameters.TryGetValue("thumb", out var thumb) && thumb == "1" ? "downloadThumb" : "downloadMedia",
+                ["chatId"] = chatId,
+                ["messageId"] = messageId,
+            };
+            if (parameters.TryGetValue("dl", out var download)) telegram["dl"] = download;
+            if (parameters.TryGetValue("kind", out var kind)) telegram["kind"] = kind;
+            return await _api.SendApiAsync(HttpMethod.Get, "telegram_media", telegram, cancellationToken: cancellationToken);
+        }
+
+        if (requestUri.AbsolutePath.Equals("/telegram_service/rest.php", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!parameters.Remove("action", out var action)
+                || action is not ("downloadMedia" or "downloadThumb"))
+                throw new InvalidOperationException("Archive Telegram service URL is invalid.");
+            parameters["telegram_action"] = action;
+            return await _api.SendApiAsync(HttpMethod.Get, "telegram_media", parameters, cancellationToken: cancellationToken);
+        }
+
+        // In desktop mode the server deliberately emits this opaque
+        // first-party facade URL for VK/Avito instead of a raw CDN URL. It is
+        // the same external-media contract as media_stream.php above, not a
+        // generic desktop API action.
+        if (requestUri.AbsolutePath.Equals("/desktop_api.php", StringComparison.OrdinalIgnoreCase)
+            && parameters.Remove("action", out var desktopAction)
+            && desktopAction == "stream_external_media")
+        {
+            if (!parameters.Remove("u", out var upstream)
+                || !IsTrustedExternalMediaUri(upstream)
+                || !ExternalMediaParametersAreValid(parameters))
+                throw new InvalidOperationException("Archive desktop external media URL is invalid.");
+            parameters["u"] = upstream;
+            return await _api.SendApiAsync(HttpMethod.Get, "stream_external_media", parameters, cancellationToken: cancellationToken);
+        }
+
+        if (requestUri.AbsolutePath.Equals("/index.php", StringComparison.OrdinalIgnoreCase)
+            || requestUri.AbsolutePath.Equals("/desktop_api.php", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!parameters.Remove("action", out var action)
+                || action is not ("wa_get_media" or "wa_get_preview"))
+                throw new InvalidOperationException("Archive media action is not permitted.");
+            return await _api.SendApiAsync(HttpMethod.Get, action, parameters, cancellationToken: cancellationToken);
+        }
+
+        throw new InvalidOperationException("Archive media path is not permitted.");
+    }
+
+    private static string UniqueArchiveEntryName(string proposedName, ISet<string> usedNames)
+    {
+        var name = DesktopDownloadLibrary.NormalizeFileName(proposedName);
+        var stem = Path.GetFileNameWithoutExtension(name);
+        var extension = Path.GetExtension(name);
+        var candidate = name;
+        var suffix = 2;
+        while (!usedNames.Add(candidate))
+        {
+            candidate = $"{stem} ({suffix}){extension}";
+            suffix += 1;
+        }
+        return candidate;
+    }
+
+    private static string ResolveDownloadedName(string proposedName, HttpResponseMessage response)
+    {
+        var name = DesktopDownloadLibrary.NormalizeFileName(proposedName);
+        if (!string.IsNullOrEmpty(Path.GetExtension(name))) return name;
+
+        // Some providers, including MAX stickers, expose an opaque media ref
+        // rather than a filename. Keep the harmless UI-provided stem, then
+        // make the saved result usable by adding the type returned by the
+        // authenticated media relay. Never guess for an unknown MIME type.
+        var extension = response.Content.Headers.ContentType?.MediaType?.ToLowerInvariant() switch
+        {
+            "image/avif" => ".avif",
+            "image/gif" => ".gif",
+            "image/heic" or "image/heif" => ".heic",
+            "image/jpeg" => ".jpg",
+            "image/png" => ".png",
+            "image/webp" => ".webp",
+            "audio/mpeg" => ".mp3",
+            "audio/ogg" => ".ogg",
+            "audio/opus" => ".opus",
+            "audio/wav" or "audio/x-wav" => ".wav",
+            "video/mp4" => ".mp4",
+            "video/quicktime" => ".mov",
+            "video/webm" => ".webm",
+            "application/pdf" => ".pdf",
+            "application/zip" => ".zip",
+            _ => string.Empty,
+        };
+        return string.IsNullOrEmpty(extension) ? name : name + extension;
+    }
+
     private async Task<CoreWebView2WebResourceResponse> ForwardAvatarAsync(CoreWebView2WebResourceRequest request, Uri requestUri)
     {
         if (!string.Equals(request.Method, "GET", StringComparison.OrdinalIgnoreCase))
@@ -474,7 +786,11 @@ public sealed class DesktopUiHost : IDisposable
             content?.Dispose();
             throw;
         }
-        if (action is "get_chats_json" or "get_messages_json" or "get_new_messages")
+        // Media delivered through the opaque desktop facade passes this
+        // method too.  Preserve the real response status in the local
+        // diagnostic log so a failed thumbnail can be distinguished from a
+        // UI-only rendering issue without recording provider URLs or tokens.
+        if (action is "get_chats_json" or "get_messages_json" or "get_new_messages" or "stream_external_media")
             RecordTransport(action, (int)response.StatusCode, request.Method);
         var stream = await response.Content.ReadAsStreamAsync();
         var headers = BuildResponseHeaders(response);
@@ -584,6 +900,18 @@ public sealed class DesktopUiHost : IDisposable
         return result;
     }
 
+    private static string DescribeArchiveSource(Uri source, IReadOnlyDictionary<string, string> parameters)
+    {
+        var keys = string.Join(',', parameters.Keys.OrderBy(key => key, StringComparer.Ordinal));
+        return $"path={source.AbsolutePath} keys={keys}";
+    }
+
+    private static string SafeDiagnostic(string value)
+    {
+        var singleLine = (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ');
+        return singleLine.Length <= 120 ? singleLine : singleLine[..120];
+    }
+
     private static string BuildResponseHeaders(HttpResponseMessage response)
     {
         var headers = new StringBuilder("Cache-Control: no-store\r\n");
@@ -642,6 +970,13 @@ public sealed class DesktopUiHost : IDisposable
         "vk.com", "vkuseraudio.net", "userapi.com", "vkuser.net", "vk-cdn.net",
         "avito.ru", "avito.st", "avito.net",
     };
+
+    public sealed record DesktopArchiveItem(Uri Source, string Name);
+    public sealed record DesktopArchiveRequest(string RequestId, string ArchiveName, IReadOnlyList<DesktopArchiveItem> Files);
+    public sealed record DesktopArchiveProgress(int Completed, int Total, int Added);
+    public sealed record DesktopArchiveResult(bool Success, string? Error, string? ArchiveName, int Added, IReadOnlyList<string> Failures);
+    public sealed record DesktopDownloadRequest(string RequestId, Uri Source, string Name);
+    public sealed record DesktopDownloadResult(bool Success, string? Error, string? FileName);
 
     private static bool TelegramOptionalFlagValuesAreValid(IReadOnlyDictionary<string, string> parameters)
     {
@@ -760,7 +1095,7 @@ public sealed class DesktopUiHost : IDisposable
     private sealed class ResponseOwnedStream(
         Stream stream,
         HttpResponseMessage response,
-        Action? onDispose = null,
+        Action<long>? onDispose = null,
         long? contentLength = null,
         CancellationTokenSource? bodyLifetime = null,
         TimeSpan? readTimeout = null) : Stream
@@ -822,7 +1157,7 @@ public sealed class DesktopUiHost : IDisposable
                     finally
                     {
                         try { _bodyLifetime.Dispose(); }
-                        finally { onDispose?.Invoke(); }
+                        finally { onDispose?.Invoke(Interlocked.Read(ref _bytesRead)); }
                     }
                 }
             }

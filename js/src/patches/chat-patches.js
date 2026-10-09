@@ -6,6 +6,8 @@
  * survive a chat switch and could act on a different dialogue. Chat-specific
  * media behaviour now belongs to BaseChat and its provider adapter.
  */
+import { attachmentMessageId, attachmentOrdinal, buildDownloadFileName, getOriginalDownloadName } from '../core/downloadNames.js';
+
 const DOWNLOAD_PROXY = 'media_stream.php';
 
 function isPreviewMode() {
@@ -13,10 +15,93 @@ function isPreviewMode() {
     || new URLSearchParams(window.location.search).get('preview') === '1';
 }
 
-const safeName = (value) => String(value || 'file')
-  .replace(/[\\/:*?"<>|]+/g, '_')
-  .replace(/\s+/g, ' ')
-  .trim() || 'file';
+function isDesktopMode() {
+  return window.APP_CONFIG?.desktopMode === true && !!globalThis.chrome?.webview;
+}
+
+function showDesktopDownloadToast({ title, detail = '', kind = 'success' } = {}) {
+  if (!isDesktopMode() || !title) return;
+  let host = document.getElementById('desktop-download-toasts');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'desktop-download-toasts';
+    host.setAttribute('aria-live', 'polite');
+    host.setAttribute('aria-relevant', 'additions');
+    document.body.appendChild(host);
+  }
+  const toast = document.createElement('section');
+  toast.className = `desktop-download-toast is-${kind === 'error' ? 'error' : 'success'}`;
+  toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+  const icon = document.createElement('i');
+  icon.className = kind === 'error' ? 'bi bi-exclamation-circle-fill' : 'bi bi-check-circle-fill';
+  icon.setAttribute('aria-hidden', 'true');
+  const copy = document.createElement('div');
+  copy.className = 'desktop-download-toast-copy';
+  const heading = document.createElement('strong');
+  heading.textContent = title;
+  copy.appendChild(heading);
+  if (detail) {
+    const text = document.createElement('small');
+    text.textContent = detail;
+    copy.appendChild(text);
+  }
+  const open = document.createElement('button');
+  open.type = 'button';
+  open.className = 'desktop-download-toast-open';
+  open.innerHTML = '<i class="bi bi-folder2-open" aria-hidden="true"></i><span>Открыть папку</span>';
+  open.addEventListener('click', () => {
+    globalThis.chrome.webview.postMessage({ type: 'open-download-library' });
+    dismiss();
+  });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'desktop-download-toast-close';
+  close.setAttribute('aria-label', 'Закрыть уведомление');
+  close.innerHTML = '<i class="bi bi-x" aria-hidden="true"></i>';
+  let timer;
+  const dismiss = () => {
+    if (timer) window.clearTimeout(timer);
+    toast.classList.add('is-leaving');
+    window.setTimeout(() => toast.remove(), 180);
+  };
+  close.addEventListener('click', dismiss);
+  toast.append(icon, copy, open, close);
+  host.appendChild(toast);
+  timer = window.setTimeout(dismiss, 7000);
+}
+
+globalThis.showDesktopDownloadToast = showDesktopDownloadToast;
+
+function clearNativeDownloadFeedback(anchor) {
+  anchor.classList.remove('is-native-download-pending');
+  anchor.removeAttribute('aria-busy');
+  delete anchor.dataset.nativeDownloadPending;
+  const label = anchor.querySelector('span');
+  if (label && anchor.dataset.nativeDownloadLabel !== undefined) {
+    label.textContent = anchor.dataset.nativeDownloadLabel;
+    delete anchor.dataset.nativeDownloadLabel;
+  }
+  if (anchor.dataset.nativeDownloadTitle !== undefined) {
+    anchor.title = anchor.dataset.nativeDownloadTitle;
+    delete anchor.dataset.nativeDownloadTitle;
+  }
+}
+
+function showNativeDownloadFeedback(anchor) {
+  if (anchor.dataset.nativeDownloadPending === '1') return;
+  anchor.dataset.nativeDownloadPending = '1';
+  anchor.classList.add('is-native-download-pending');
+  anchor.setAttribute('aria-busy', 'true');
+  const label = anchor.querySelector('span');
+  if (label) {
+    anchor.dataset.nativeDownloadLabel = label.textContent || '';
+    label.textContent = 'Загрузка…';
+  }
+  const title = anchor.getAttribute('title');
+  if (title) anchor.dataset.nativeDownloadTitle = title;
+  anchor.title = 'Загрузка начата';
+  window.setTimeout(() => clearNativeDownloadFeedback(anchor), 30_000);
+}
 
 function sourceId() {
   const fromChat = window.currentChat?.provider?.id || window.currentChat?.source;
@@ -24,24 +109,28 @@ function sourceId() {
   return String(fromChat || fromUrl || 'chat').toLowerCase().replace(/[^a-z0-9]+/g, '_') || 'chat';
 }
 
-function shortHash(value) {
-  let hash = 5381;
-  for (const char of String(value || '')) hash = ((hash << 5) + hash) ^ char.charCodeAt(0);
-  return (hash >>> 0).toString(16).slice(0, 8);
-}
-
 function filenameFor(anchor) {
+  const ready = anchor.dataset.canonicalDownloadName;
+  if (ready) return ready;
   const href = anchor.getAttribute('href') || '';
-  let name = anchor.getAttribute('download') || '';
-  try {
-    const url = new URL(href, location.href);
-    name ||= url.searchParams.get('name') || url.pathname.split('/').pop() || '';
-  } catch {}
-  name = safeName(name || 'file');
-  const ext = name.match(/\.[a-z0-9]{1,8}$/i)?.[0] || '';
-  const base = ext ? name.slice(0, -ext.length) : name;
-  const messageId = anchor.closest('.message')?.dataset?.id || shortHash(href);
-  return `${base}__${sourceId()}_${String(messageId).replace(/[^a-zA-Z0-9_-]/g, '_')}${ext}`;
+  const message = anchor.closest('.message');
+  const originalName = anchor.dataset.downloadOriginalName
+    || getOriginalDownloadName({
+      originalName: anchor.getAttribute('download') || '',
+      imageAlt: anchor.querySelector('img')?.getAttribute('alt') || '',
+      url: href,
+    });
+  anchor.dataset.downloadOriginalName = originalName;
+  const name = buildDownloadFileName({
+    provider: sourceId(),
+    messageId: attachmentMessageId(anchor, message),
+    timestamp: message?.dataset?.timestamp || '',
+    ordinal: attachmentOrdinal(anchor, message),
+    originalName,
+    url: href,
+  });
+  anchor.dataset.canonicalDownloadName = name;
+  return name;
 }
 
 function isDownloadLink(anchor) {
@@ -106,9 +195,46 @@ function installDownloadCompatibility() {
   if (window.__downloadCompatibilityInstalled) return;
   window.__downloadCompatibilityInstalled = true;
   window.rewriteDownloads = rewriteDownloads;
+  if (isDesktopMode()) {
+    globalThis.chrome.webview.addEventListener('message', event => {
+      const data = event?.data;
+      if (!data || data.type !== 'native-download-result' || !data.requestId) return;
+      const anchor = document.querySelector(`a[data-native-download-request="${CSS.escape(String(data.requestId))}"]`);
+      if (!anchor) return;
+      delete anchor.dataset.nativeDownloadRequest;
+      clearNativeDownloadFeedback(anchor);
+      if (data.success) {
+        showDesktopDownloadToast({
+          title: 'Файл загружен',
+          detail: String(data.fileName || 'Файл сохранён в библиотеке загрузок.')
+        });
+      } else {
+        showDesktopDownloadToast({ title: 'Не удалось скачать файл', kind: 'error' });
+        window.alert(data.error || 'Не удалось скачать файл.');
+      }
+    });
+  }
   document.addEventListener('click', (event) => {
     const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null;
     if (!isDownloadLink(anchor)) return;
+    // The desktop host owns download transport and writes the response
+    // straight to its native library.  Fetching into a Blob here both defeats
+    // that handler and makes a large file consume the WebView's memory first.
+    if (isDesktopMode()) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (anchor.dataset.nativeDownloadPending === '1') return;
+      showNativeDownloadFeedback(anchor);
+      const requestId = `download-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      anchor.dataset.nativeDownloadRequest = requestId;
+      globalThis.chrome.webview.postMessage({
+        type: 'save-download',
+        requestId,
+        url: anchor.href,
+        name: filenameFor(anchor)
+      });
+      return;
+    }
     if (isPreviewMode()) {
       event.preventDefault();
       event.stopPropagation();

@@ -1,4 +1,4 @@
-import { BaseChat } from '../BaseChat.js?v=20261004-chat-zip-r3';
+import { BaseChat } from '../BaseChat.js?v=20261009-capability-refresh-r1';
 import { WhatsappChat } from '../WhatsappChat.js?v=20261004-chat-zip-r3';
 import { TelegramChat } from './TelegramChat.js?v=20261004-chat-zip-r3';
 import { VKChat } from './VKChat.js?v=20261004-chat-zip-r3';

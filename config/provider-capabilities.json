@@ -1,0 +1,392 @@
+{
+  "Telegram": {
+    "reaction": {
+      "state": "ready",
+      "constraints": {
+        "choices": [
+          "👍",
+          "❤️",
+          "😂",
+          "😮",
+          "😢",
+          "🙏"
+        ],
+        "max_own": 1,
+        "can_remove": true
+      }
+    },
+    "reply": {
+      "state": "ready"
+    },
+    "attachment": {
+      "state": "ready",
+      "constraints": {
+        "kinds": [
+          "photo",
+          "video",
+          "document",
+          "audio"
+        ],
+        "max_files": 10,
+        "max_file_bytes": 52428800,
+        "max_total_bytes": 52428800
+      }
+    },
+    "photo": {
+      "state": "ready"
+    },
+    "video": {
+      "state": "ready"
+    },
+    "document": {
+      "state": "ready"
+    },
+    "voice": {
+      "state": "not_implemented",
+      "reason": "Отправка голосовых Telegram ещё не выделена в адаптер."
+    },
+    "album": {
+      "state": "ready",
+      "constraints": {
+        "max_files": 10,
+        "max_total_bytes": 52428800
+      }
+    },
+    "edit": {
+      "state": "not_implemented",
+      "reason": "Редактирование сообщений Telegram ещё не подключено."
+    },
+    "delete": {
+      "state": "not_implemented",
+      "reason": "Удаление сообщений Telegram ещё не подключено."
+    },
+    "read_receipts": {
+      "state": "ready",
+      "reason": "Telegram передаёт границу прочтения исходящих сообщений в истории диалога."
+    },
+    "profile": {
+      "state": "ready"
+    },
+    "presence": {
+      "state": "unavailable",
+      "reason": "Статус присутствия Telegram пока не синхронизирован."
+    },
+    "self_profile": {
+      "state": "ready"
+    },
+    "contact_profile": {
+      "state": "ready"
+    }
+  },
+  "WhatsApp": {
+    "reaction": {
+      "state": "ready",
+      "constraints": {
+        "choices": [
+          "👍",
+          "❤️",
+          "😂",
+          "😮",
+          "😢",
+          "🙏"
+        ],
+        "max_own": 1,
+        "can_remove": true
+      }
+    },
+    "reply": {
+      "state": "ready"
+    },
+    "attachment": {
+      "state": "ready",
+      "constraints": {
+        "kinds": [
+          "photo",
+          "video",
+          "document",
+          "audio"
+        ],
+        "max_files": 10,
+        "max_file_bytes": 52428800,
+        "max_total_bytes": 104857600
+      }
+    },
+    "photo": {
+      "state": "ready"
+    },
+    "video": {
+      "state": "ready"
+    },
+    "document": {
+      "state": "ready"
+    },
+    "voice": {
+      "state": "unavailable",
+      "reason": "Отправка голосовых WhatsApp пока не выделена в UI."
+    },
+    "album": {
+      "state": "ready",
+      "constraints": {
+        "max_files": 10
+      }
+    },
+    "edit": {
+      "state": "not_implemented",
+      "reason": "Редактирование сообщений WhatsApp ещё не подключено."
+    },
+    "delete": {
+      "state": "not_implemented",
+      "reason": "Удаление сообщений WhatsApp ещё не подключено."
+    },
+    "read_receipts": {
+      "state": "ready"
+    },
+    "profile": {
+      "state": "ready"
+    },
+    "presence": {
+      "state": "unavailable",
+      "reason": "Статус присутствия WhatsApp пока не синхронизирован."
+    },
+    "self_profile": {
+      "state": "ready"
+    },
+    "contact_profile": {
+      "state": "ready"
+    }
+  },
+  "VK": {
+    "reaction": {
+      "state": "not_implemented",
+      "reason": "Реакции VK ещё не подключены к адаптеру."
+    },
+    "reply": {
+      "state": "ready"
+    },
+    "attachment": {
+      "state": "ready",
+      "constraints": {
+        "kinds": [
+          "photo"
+        ],
+        "max_files": 1,
+        "max_file_bytes": 20971520,
+        "max_total_bytes": 20971520
+      }
+    },
+    "photo": {
+      "state": "ready"
+    },
+    "video": {
+      "state": "service_unsupported",
+      "reason": "Текущий адаптер VK отправляет только фотографии."
+    },
+    "document": {
+      "state": "service_unsupported",
+      "reason": "Текущий адаптер VK отправляет только фотографии."
+    },
+    "voice": {
+      "state": "service_unsupported",
+      "reason": "Текущий адаптер VK не отправляет голосовые сообщения."
+    },
+    "album": {
+      "state": "unavailable",
+      "reason": "VK пока отправляет выбранные файлы по одному."
+    },
+    "edit": {
+      "state": "not_implemented",
+      "reason": "Редактирование сообщений VK ещё не подключено."
+    },
+    "delete": {
+      "state": "not_implemented",
+      "reason": "Удаление сообщений VK ещё не подключено."
+    },
+    "read_receipts": {
+      "state": "ready",
+      "reason": "VK передаёт out_read для исходящих сообщений диалога."
+    },
+    "profile": {
+      "state": "unavailable",
+      "reason": "Профиль текущего аккаунта VK ещё не подключён."
+    },
+    "presence": {
+      "state": "unavailable",
+      "reason": "Статус присутствия VK пока не синхронизирован."
+    },
+    "self_profile": {
+      "state": "unavailable",
+      "reason": "Профиль текущего аккаунта VK ещё не подключён."
+    },
+    "contact_profile": {
+      "state": "ready",
+      "reason": "Доступны сведения контакта VK."
+    }
+  },
+  "Avito": {
+    "reaction": {
+      "state": "not_implemented",
+      "reason": "Реакции Avito ещё не подключены к адаптеру."
+    },
+    "reply": {
+      "state": "not_implemented",
+      "reason": "Публичный API Avito пока не документирует отправку ответа на конкретное сообщение."
+    },
+    "attachment": {
+      "state": "ready",
+      "constraints": {
+        "kinds": [
+          "photo"
+        ],
+        "max_files": 1,
+        "max_file_bytes": 20971520,
+        "max_total_bytes": 20971520
+      }
+    },
+    "photo": {
+      "state": "ready"
+    },
+    "video": {
+      "state": "service_unsupported",
+      "reason": "Текущий адаптер Avito отправляет только изображения."
+    },
+    "document": {
+      "state": "service_unsupported",
+      "reason": "Текущий адаптер Avito отправляет только изображения."
+    },
+    "voice": {
+      "state": "service_unsupported",
+      "reason": "Публичный API Avito не подключён для голосовых сообщений."
+    },
+    "album": {
+      "state": "unavailable",
+      "reason": "Avito пока отправляет выбранные файлы по одному."
+    },
+    "edit": {
+      "state": "not_implemented",
+      "reason": "Редактирование сообщений Avito ещё не подключено."
+    },
+    "delete": {
+      "state": "not_implemented",
+      "reason": "Удаление сообщений Avito ещё не подключено."
+    },
+    "read_receipts": {
+      "state": "ready",
+      "reason": "Avito передаёт признак прочтения для сообщений из истории диалога."
+    },
+    "profile": {
+      "state": "unavailable",
+      "reason": "Профиль текущего аккаунта Avito ещё не подключён."
+    },
+    "presence": {
+      "state": "service_unsupported",
+      "reason": "Публичный API Avito не предоставляет статус присутствия."
+    },
+    "self_profile": {
+      "state": "unavailable",
+      "reason": "Профиль текущего аккаунта Avito ещё не подключён."
+    },
+    "contact_profile": {
+      "state": "unavailable",
+      "reason": "Профиль текущего аккаунта Avito ещё не подключён."
+    }
+  },
+  "MAX": {
+    "reaction": {
+      "state": "ready",
+      "constraints": {
+        "choices": [
+          "👍",
+          "❤️",
+          "😂",
+          "😮",
+          "😢",
+          "🙏"
+        ],
+        "max_own": 1,
+        "can_remove": true
+      }
+    },
+    "reply": {
+      "state": "ready"
+    },
+    "message": {
+      "state": "ready",
+      "constraints": {
+        "max_text_length": 4000
+      }
+    },
+    "attachment": {
+      "state": "ready",
+    "reason": "Пачка вложений MAX поддерживает только фотографии.",
+      "constraints": {
+        "kinds": [
+          "photo",
+          "document"
+        ],
+      "max_files": 10,
+        "max_file_bytes": 10485760,
+      "max_total_bytes": 20971520
+      }
+    },
+    "photo": {
+      "state": "ready",
+    "reason": "Пачка MAX — до десяти фотографий.",
+      "constraints": {
+      "max_files": 10,
+        "max_file_bytes": 10485760
+      }
+    },
+    "video": {
+      "state": "unavailable",
+      "reason": "Отправка MAX ещё не включена."
+    },
+    "document": {
+      "state": "ready",
+      "constraints": {
+      "max_files": 1,
+        "max_file_bytes": 10485760
+      }
+    },
+    "voice": {
+      "state": "unavailable",
+      "reason": "Отправка MAX ещё не включена."
+    },
+    "album": {
+      "state": "ready",
+      "constraints": {
+        "kinds": ["photo"],
+        "max_files": 10,
+        "max_total_bytes": 20971520
+      }
+    },
+    "edit": {
+      "state": "not_implemented",
+      "reason": "Редактирование MAX ещё не подключено."
+    },
+    "delete": {
+      "state": "not_implemented",
+      "reason": "Удаление MAX ещё не подключено."
+    },
+    "read_receipts": {
+      "state": "ready",
+      "reason": "Подтверждённое прочтение собеседником в личных диалогах MAX; отдельное событие доставки недоступно.",
+      "constraints": {"chat_types": ["DIALOG"], "peer_only": true, "delivery_receipts": false}
+    },
+    "profile": {
+      "state": "ready",
+      "reason": "Доступны сведения подключённого аккаунта MAX."
+    },
+    "presence": {
+      "state": "unavailable",
+      "reason": "Присутствие MAX ещё не подключено."
+    },
+    "self_profile": {
+      "state": "ready",
+      "reason": "Доступны сведения подключённого аккаунта MAX."
+    },
+    "contact_profile": {
+      "state": "ready",
+      "reason": "Доступны сведения выбранного диалога MAX."
+    }
+  }
+}

@@ -5,9 +5,9 @@ import { getProvider } from '../domain/providers.js';
 import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
 import { ReactionActors } from './chat/ReactionActors.js?v=20261004-perf-r1';
 import { ChatReactions } from './chat/ChatReactions.js?v=20261004-perf-r1';
-import { MediaGallery } from './chat/MediaGallery.js?v=20261004-chat-zip-r14';
+import { MediaGallery } from './chat/MediaGallery.js?v=20261009-download-names-r1';
 import { MediaUrls } from './chat/MediaUrls.js?v=20261001-static-sticker-r5';
-import { MessageRenderer } from './chat/MessageRenderer.js?v=20261004-perf-r1';
+import { MessageRenderer } from './chat/MessageRenderer.js?v=20261009-vk-private-video-r4';
 import { ChatOutbox } from './chat/ChatOutbox.js?v=20260923-telegram-delete-r11';
 import { ChatAlbums } from './chat/ChatAlbums.js?v=20260923-telegram-delete-r11';
 import { ChatHistory } from './chat/ChatHistory.js?v=20261004-perf-r1';
@@ -347,14 +347,24 @@ if (titleHost) {
     // Static provider capabilities already cover the first paint. The remote
     // override is secondary and otherwise queues beside the first history,
     // unread and realtime reads on the single-process local bridge.
-    this.lifetime.timeout(() => {
+    // Capabilities are server configuration, not chat history. A deployment
+    // or a provider reconnection can legitimately change them while this
+    // chat stays open. Revalidate the small manifest in the background so a
+    // disabled header control cannot remain stale until the user reopens the
+    // same conversation. This endpoint never opens a provider chat or marks
+    // anything read.
+    const refreshCapabilities = () => {
       void this._loadProviderCapabilities().then(() => {
         if (this._isActiveInstance()) {
           this._applyCapabilityVisibility();
           this._refreshMessageActions();
         }
       });
-    }, 1800);
+    };
+    this.lifetime.timeout(refreshCapabilities, 1800);
+    this.lifetime.interval(() => {
+      if (!document.hidden && this._isActiveInstance()) refreshCapabilities();
+    }, 60_000);
     // The header lookup uses the chat-list cache. Defer it slightly so it
     // cannot contend with the first history response or visible media.
     this._chatDetailsTimer = this.lifetime.timeout(() => {

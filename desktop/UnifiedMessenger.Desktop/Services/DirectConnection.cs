@@ -158,7 +158,10 @@ public sealed class DesktopApiClient : IDisposable
         {
             foreach (var header in requestHeaders)
             {
-                if (!header.Key.Equals("Range", StringComparison.OrdinalIgnoreCase))
+                var isRange = header.Key.Equals("Range", StringComparison.OrdinalIgnoreCase);
+                var isTrace = header.Key.Equals("X-Unified-Media-Trace", StringComparison.OrdinalIgnoreCase)
+                    && System.Text.RegularExpressions.Regex.IsMatch(header.Value, "^d[0-9a-f]{1,16}-[0-9a-f]{1,16}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+                if (!isRange && !isTrace)
                     throw new InvalidOperationException("Desktop request header is not permitted.");
                 request.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }

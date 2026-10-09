@@ -511,5 +511,3 @@ if ($apiId > 0 && $apiHash !== '') {
 
 tg_listener_log('boot');
 UnifiedTelegramEventHandler::startAndLoop(TG_LISTENER_SESSION, $settings);
-
-

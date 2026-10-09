@@ -123,6 +123,40 @@ export class MediaLoader {
     return this.chat._safeRemoteUrl(sourceTag?.dataset?.lazySrc || element.dataset?.lazySrc || '');
   }
 
+  _startDeferredVideo(video, shouldPlay = true) {
+    if (!video || video.tagName !== 'VIDEO' || video.dataset.deferVideo !== '1') return;
+    delete video.dataset.deferVideo;
+    // The renderer set preload="none" while the video had only a poster.
+    // Switch to normal metadata loading only after an explicit user action.
+    video.preload = 'metadata';
+    // The poster remains visible while Chromium obtains media metadata. The
+    // spinner helper knows not to paint a second indicator over it.
+    this.chat._attachMediaSpinner(video);
+    this._activateLazyMedia(video);
+    if (shouldPlay) {
+      const start = () => { try { video.play()?.catch?.(() => {}); } catch {} };
+      if ((video.readyState || 0) >= 1) start();
+      else video.addEventListener('loadedmetadata', start, { once: true });
+    }
+  }
+
+  _bindDeferredVideoStart(video) {
+    if (!video || video.dataset.bcDeferredVideoBound === '1') return;
+    video.dataset.bcDeferredVideoBound = '1';
+    const start = (event) => {
+      if (video.dataset.deferVideo !== '1') return;
+      // The first interaction belongs to activation, not to a native player
+      // with no source yet. Subsequent controls are handled by Chromium.
+      event?.preventDefault?.();
+      event?.stopPropagation?.();
+      this._startDeferredVideo(video, true);
+    };
+    this.chat.lifetime.listen(video, 'pointerdown', start, { capture: true });
+    this.chat.lifetime.listen(video, 'keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') start(event);
+    }, { capture: true });
+  }
+
   _activateLazyMedia(element) {
     if (!element || !this.chat._isActiveInstance()) return;
     const target = element.tagName === 'SOURCE' ? element.closest('video, audio') : element;
@@ -137,7 +171,18 @@ export class MediaLoader {
 
     if (lazyPoster) {
       target.poster = lazyPoster;
+      // The video element has a real image poster before the MP4 canplay
+      // event. Keep that state explicit so the shared loading surface does
+      // not hide the useful first frame behind its own spinner.
+      target.dataset.bcHasPoster = '1';
       delete target.dataset.lazyPoster;
+    }
+    if (target.tagName === 'VIDEO' && target.dataset.deferVideo === '1') {
+      this._bindDeferredVideoStart(target);
+      const surface = target.closest('.video-player');
+      if (surface) surface.dataset.mediaState = 'poster';
+      delete target.dataset.lazyObserved;
+      return;
     }
     if (!lazySrc) {
       delete target.dataset.lazyObserved;
@@ -264,6 +309,13 @@ export class MediaLoader {
     if (!element || !element.isConnected || !this.chat._isActiveInstance()) return;
     const lazySrc = this.chat._lazyMediaSource(element);
     if (!lazySrc) return;
+    // A deferred video only needs its poster now. Do not put this source-less
+    // player into a provider queue: no media lifecycle event can release such
+    // a queue entry before the user explicitly starts playback.
+    if (element.tagName === 'VIDEO' && element.dataset.deferVideo === '1') {
+      this.chat._activateLazyMedia(element);
+      return;
+    }
     const provider = String(this.chat.source || '').toLowerCase();
     if (provider === 'whatsapp') {
       this.chat._queueWhatsAppLazyMedia(element);
@@ -427,9 +479,16 @@ export class MediaLoader {
       }
     }, {
       root: this.chat.messageArea || null,
-      rootMargin: ['whatsapp', 'telegram'].includes(String(this.chat.source || '').toLowerCase())
-        ? '72px'
-        : '240px',
+      // Telegram videos now defer their MP4 until Play, so it is safe and
+      // useful to request only their small JPEG posters well before a tile
+      // enters the viewport. This avoids a timeline where just the last
+      // visible card has a preview, without reintroducing background video
+      // downloads. The native transport keeps the opening phase bounded.
+      rootMargin: String(this.chat.source || '').toLowerCase() === 'telegram'
+        ? '640px 0px'
+        : String(this.chat.source || '').toLowerCase() === 'whatsapp'
+          ? '72px'
+          : '240px',
       threshold: 0.01,
     });
   }
@@ -504,9 +563,15 @@ export class MediaLoader {
           this.chat.lifetime.clearTimeout(el._bc_retryTimer);
           el._bc_retryTimer = null;
         }
+        if (el._bc_lateRecoveryTimer) {
+          this.chat.lifetime.clearTimeout(el._bc_lateRecoveryTimer);
+          el._bc_lateRecoveryTimer = null;
+        }
         el._bc_retryGeneration = (el._bc_retryGeneration || 0) + 1;
         delete el.dataset.bcMediaRetryCount;
         delete el.dataset.bcMediaRetryScheduled;
+        delete el.dataset.bcLateRecoveryScheduled;
+        delete el.dataset.bcLateRecoveryTried;
       };
       const error = () => {
         // The spinner and the video fallback observer both see the same
@@ -603,6 +668,29 @@ export class MediaLoader {
         label.textContent = unavailable ? 'Файл недоступен в WhatsApp' : 'Не удалось загрузить вложение';
         error.appendChild(label);
         surface.appendChild(error);
+
+        // A failed response is not a cache entry saying that the attachment
+        // does not exist.  In particular, an image CDN may be briefly late
+        // after a history response, while the full item is already available
+        // from the gallery.  Give an image one quiet, delayed recovery pass.
+        // Keeping it to a single request avoids turning a long chat into a
+        // background retry loop; WhatsApp's explicit historic-unavailable
+        // marker is final and must not be probed again.
+        if (!unavailable
+          && el.tagName === 'IMG'
+          && el.dataset.bcLateRecoveryTried !== '1'
+          && el.dataset.bcLateRecoveryScheduled !== '1') {
+          el.dataset.bcLateRecoveryScheduled = '1';
+          el._bc_lateRecoveryTimer = this.chat.lifetime.timeout(() => {
+            el._bc_lateRecoveryTimer = null;
+            delete el.dataset.bcLateRecoveryScheduled;
+            if (!el.isConnected || !this.chat._isActiveInstance()) return;
+            el.dataset.bcLateRecoveryTried = '1';
+            delete el.dataset.bcSpinAttached;
+            this.chat._attachMediaSpinner(el);
+            this.chat._forceReloadMedia(el);
+          }, 8000);
+        }
         return;
       }
 
@@ -744,7 +832,10 @@ export class MediaLoader {
       if (!target || seen.has(target)) return;
       seen.add(target);
       this.chat._prepareLazyImageLayout(target);
-      try { this.chat._attachMediaSpinner(target); } catch {}
+      const isDeferredVideo = target.tagName === 'VIDEO' && target.dataset.deferVideo === '1';
+      if (!isDeferredVideo) {
+        try { this.chat._attachMediaSpinner(target); } catch {}
+      }
 
       if (!this.chat._lazyObserver) {
         this.chat._activateLazyMedia(target);
@@ -808,6 +899,10 @@ export class MediaLoader {
           fallbackTimer = null;
         };
         const convertToFallback = () => {
+          // An intentionally deferred video has no attached MP4 source yet.
+          // Chromium may report that state as an error; it is not a failed
+          // download and must never turn scrolling into a background fetch.
+          if (video.dataset.deferVideo === '1') return;
           clearFallbackTimer();
           const holder = video.closest('.media-holder.video-holder');
           if (!holder) return;
@@ -822,7 +917,7 @@ export class MediaLoader {
         };
         const armSlowLoadFallback = () => {
           clearFallbackTimer();
-          if (metadataReady || !video.isConnected || video.error) return;
+          if (video.dataset.deferVideo === '1' || metadataReady || !video.isConnected || video.error) return;
           fallbackTimer = this.chat.lifetime.timeout(() => {
             fallbackTimer = null;
             // A slow but progressing request must remain playable. The
@@ -846,7 +941,7 @@ export class MediaLoader {
         // arrives; the existing no-progress timer remains authoritative.
         // The hook is installed after the initial lazy-load setup. Cover a
         // video that was already loading before these handlers were attached.
-        if (video.networkState === 2 && !metadataReady) armSlowLoadFallback();
+        if (video.dataset.deferVideo !== '1' && video.networkState === 2 && !metadataReady) armSlowLoadFallback();
       };
 
       root.querySelectorAll('video.msg-video').forEach(bindVideo);

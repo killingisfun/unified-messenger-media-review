@@ -538,6 +538,7 @@ body .reaction-choice:focus-visible { outline: 2px solid var(--ui-accent); outli
 .app .message.has-media-caption .single-photo-link { display: block; max-width: 100%; }
 .app .message.has-media-caption .single-photo img { max-width: 100%; }
 .app .message.is-single-video { width: var(--video-bubble-width, 450px); max-width: 100%; }
+.app .message.has-restricted-vk-video { width: var(--video-bubble-width, 450px); max-width: 100%; }
 .app .message .video-player { height: auto; aspect-ratio: 16 / 9; }
 .app .message .video-player video.msg-video { aspect-ratio: auto; object-fit: contain; }
 .app .message .video-holder.video-note { width: min(280px, 100%); }

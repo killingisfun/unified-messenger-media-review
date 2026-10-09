@@ -17,6 +17,18 @@ byId('welcome-providers').innerHTML = providers.map(p => `<span data-provider="$
 document.querySelector('.provider-count').textContent = `${providers.length} провайдера`;
 fillIcons(document);
 
+// Downloads are written by the native WebView2 host, not by the browser
+// sandbox.  Keep the library affordance out of the legacy PHP/browser mode.
+const openDownloadLibrary = byId('open-download-library');
+const nativeWebView = globalThis.chrome?.webview;
+if (openDownloadLibrary) {
+  const isDesktop = window.APP_CONFIG?.desktopMode === true && !!nativeWebView;
+  openDownloadLibrary.hidden = !isDesktop;
+  openDownloadLibrary.addEventListener('click', () => {
+    if (isDesktop) nativeWebView.postMessage({ type: 'open-download-library' });
+  });
+}
+
 const applyFilters = () => document.dispatchEvent(new Event('inbox:filter'));
 byId('chat-search').addEventListener('input', applyFilters);
 document.querySelectorAll('[data-inbox-view]').forEach(button => button.addEventListener('click', () => {

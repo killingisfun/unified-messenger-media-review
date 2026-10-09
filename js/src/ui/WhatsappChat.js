@@ -1,4 +1,4 @@
-import { BaseChat } from './BaseChat.js?v=20261004-chat-zip-r3';
+import { BaseChat } from './BaseChat.js?v=20261009-capability-refresh-r1';
 import { whatsappAlbumTransport } from './services/transports/whatsappAlbum.js';
 
 /**

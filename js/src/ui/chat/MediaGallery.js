@@ -1,5 +1,6 @@
 
 import { buildZipBlob } from './mediaArchive.js';
+import { attachmentMessageId, buildArchiveFileName, buildDownloadFileName, getOriginalDownloadName } from '../../core/downloadNames.js';
 
 /** Image viewer, download links and client-side ZIP downloads. */
 export class MediaGallery {
@@ -31,7 +32,19 @@ export class MediaGallery {
     overlay.setAttribute('role', 'dialog');
     overlay.setAttribute('aria-modal', 'true');
     overlay.setAttribute('aria-label', 'Просмотр фотографий');
-    const filenameFor = (link) => link?.querySelector('img')?.getAttribute('alt') || link?.getAttribute('download') || 'media';
+    const titleDownloadName = (link) => link?.dataset?.title?.match(/download='([^']*)'/)?.[1] || '';
+    const filenameFor = (link) => {
+      const message = link?.closest('.message');
+      return buildDownloadFileName({
+        provider: this.chat.source,
+        messageId: attachmentMessageId(link, message),
+        timestamp: message?.dataset?.timestamp || '',
+        ordinal: Math.max(1, links.indexOf(link) + 1),
+        originalName: link?.dataset?.downloadOriginalName || link?.getAttribute('download') || titleDownloadName(link),
+        imageAlt: link?.querySelector('img')?.getAttribute('alt') || '',
+        url: link?.href || '',
+      });
+    };
     const render = () => {
       const link = links[index];
       if (!link) return;
@@ -41,6 +54,7 @@ export class MediaGallery {
       caption.textContent = links.length > 1 ? `${index + 1} из ${links.length}` : filename;
       download.href = this.chat._withDlParam(this.chat._withNameParam(link.href, filename));
       download.setAttribute('download', filename);
+      download.dataset.canonicalDownloadName = filename;
       overlay.querySelector('.bc-gallery-prev').disabled = links.length < 2;
       overlay.querySelector('.bc-gallery-next').disabled = links.length < 2;
     };
@@ -133,61 +147,57 @@ export class MediaGallery {
       } else {
         links = Array.from(messageEl.querySelectorAll('a[download]'));
       }
-      const chatTitleEl = document.getElementById('chat-title');
-      let prefix = 'chat';
-      if (chatTitleEl) {
-        prefix = (chatTitleEl.innerText.split('\n')[0] || 'chat')
-          .trim()
-          .replace(/[^a-zA-Z0-9\u0400-\u04FF\s_-]/g, '')
-          .replace(/\s+/g, '_');
-      }
-      const nameCounts = {};
-      const filesToZip = links.map(a => {
+      const filesToZip = links.map((a, index) => {
         // Attachment links enter through the local bridge. In the optional
         // media-worker mode they may make one local redirect after that.
         // Keep the proven browser-side ZIP flow, but never rewrite a local
         // media URL to the retired external fallback from the old UI.
         const url = a.href || '';
-        let originalName = a.getAttribute('download') || (a.querySelector('img') ? a.querySelector('img').getAttribute('alt') : null);
+        let originalName = a.dataset.downloadOriginalName || a.getAttribute('download') || (a.querySelector('img') ? a.querySelector('img').getAttribute('alt') : null);
         if (!originalName && a.dataset.title) {
           const match = a.dataset.title.match(/download='([^']*)'/);
           if (match && match[1]) {
             originalName = match[1];
           }
         }
-        originalName = originalName || 'file';
-        const hasExtension = /\.[a-zA-Z0-9]{2,5}$/.test(originalName);
-        if (!hasExtension) {
-          const match = url.match(/\.([a-zA-Z0-9]{2,5})(?:\?|$)/);
-          if (match) {
-            originalName += '.' + match[1];
-          } else {
-            originalName += '.jpeg';
-          }
-        }
-        let uniqueName = originalName;
-        if (nameCounts[originalName]) {
-          const count = nameCounts[originalName]++;
-          const parts = originalName.split('.');
-          const ext = parts.pop();
-          const baseName = parts.join('.');
-          uniqueName = `${baseName}(${count}).${ext}`;
-        } else {
-          nameCounts[originalName] = 1;
-        }
-        // The archive itself already contains the source/chat prefix. Keep
-        // entries readable and preserve the original attachment names.
-        const finalName = uniqueName;
+        const finalName = buildDownloadFileName({
+          provider: this.chat.source,
+          messageId: attachmentMessageId(a, messageEl),
+          timestamp: messageEl?.dataset?.timestamp || '',
+          ordinal: index + 1,
+          originalName: getOriginalDownloadName({ originalName, url }),
+          url,
+        });
         return {
           url: url,
           name: finalName
         };
       });
       if (filesToZip.length === 0) throw new Error('Файлы для скачивания не найдены.');
-      const sourcePrefix = (this.chat.source || 'chat').trim().replace(/[^a-zA-Z0-9\u0400-\u04FF_-]/g, '_') || 'chat';
-      const chatId = String(this.chat.chatId || 'unknown').replace(/[^a-zA-Z0-9@._-]/g, '_');
-      const stamp = new Date().toISOString().slice(0, 16).replace(/[T:]/g, '-');
-      const archiveName = `${sourcePrefix}_${chatId}_${stamp}.zip`;
+      const archiveName = buildArchiveFileName({
+        provider: this.chat.source,
+        chatId: this.chat.chatId || this.chat.chatDbId || '',
+      });
+      if (window.APP_CONFIG?.desktopMode === true && !!globalThis.chrome?.webview) {
+        if (btnText) btnText.textContent = `Архивирование... (0/${filesToZip.length})`;
+        const result = await this._createDesktopArchive(archiveName, filesToZip, (completed, total) => {
+          if (btnText) btnText.textContent = `Архивирование... (${completed}/${total})`;
+        });
+        if (!result.success) throw new Error(result.error || 'Не удалось создать архив.');
+        archiveReady = true;
+        btn.disabled = false;
+        if (btnSpinner) btnSpinner.classList.add('d-none');
+        if (btnText) btnText.textContent = `Архив готов: ${result.archiveName}`;
+        globalThis.showDesktopDownloadToast?.({
+          title: 'Архив готов',
+          detail: String(result.archiveName || 'Архив сохранён в библиотеке загрузок.')
+        });
+        if (result.failures?.length) window.alert(`Архив создан: ${result.added} из ${filesToZip.length} файлов. Не добавлены: ${result.failures.join(', ')}`);
+        window.setTimeout(() => {
+          if (btnText) btnText.textContent = 'Скачать всё';
+        }, 2500);
+        return;
+      }
       const fetched = [];
       const failures = [];
       let completedCount = 0;
@@ -263,6 +273,37 @@ export class MediaGallery {
         }
       }, 2000);
     }
+  }
+
+  _createDesktopArchive(archiveName, files, onProgress) {
+    const webview = globalThis.chrome?.webview;
+    if (!webview) return Promise.reject(new Error('Нативная загрузка недоступна.'));
+    const requestId = `archive-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    return new Promise((resolve, reject) => {
+      let timeout;
+      const cleanup = () => {
+        if (timeout) window.clearTimeout(timeout);
+        webview.removeEventListener('message', onMessage);
+      };
+      const onMessage = event => {
+        const data = event?.data;
+        if (!data || data.requestId !== requestId) return;
+        if (data.type === 'download-archive-progress') {
+          onProgress?.(Number(data.completed || 0), Number(data.total || files.length));
+          return;
+        }
+        if (data.type === 'download-archive-result') {
+          cleanup();
+          resolve(data);
+        }
+      };
+      timeout = window.setTimeout(() => {
+        cleanup();
+        reject(new Error('Создание архива не завершилось вовремя.'));
+      }, 15 * 60 * 1000);
+      webview.addEventListener('message', onMessage);
+      webview.postMessage({ type: 'create-download-archive', requestId, archiveName, files });
+    });
   }
 
   _withNameParam(url, name) {

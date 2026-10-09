@@ -47,6 +47,10 @@ if (!host.includes('SendTelegramMediaWithThumbnailFallbackAsync')
 }
 if (!host.includes('SemaphoreSlim _telegramMediaOpenGate = new(3, 3)')
   || !host.includes('CreateTelegramMediaResponseAsync')
+  || !host.includes('CreateTelegramMediaTrace')
+  || !host.includes('X-Unified-Media-Trace')
+  || !host.includes('telegram_media_headers')
+  || !host.includes('telegram_media_body')
   || !host.includes('new ResponseOwnedStream(')
   || !host.includes('_telegramMediaOpenGate.Release();')
   || !host.includes('new CancellationTokenSource(TimeSpan.FromSeconds(10))')
@@ -60,9 +64,9 @@ if (!telegram.includes("'kind' => strtolower($type)")) {
   throw new Error('Telegram attachment URLs must carry a bounded media kind for the desktop relay.');
 }
 const renderer = fs.readFileSync('js/src/ui/chat/MessageRenderer.js', 'utf8');
-if (!renderer.includes('const poster = att.preview || att.thumbnail || \'\';')
-  || !renderer.includes('const posterAttr = poster ?')) {
-  throw new Error('Telegram videos must retain their image-only poster contract.');
+if (!renderer.includes("const poster = att.preview || att.thumbnail || this.chat._videoPoster;")
+  || !renderer.includes("const posterAttr = ` data-lazy-poster=")) {
+  throw new Error('Every provider video must retain an image-only poster contract.');
 }
 if (!host.includes('"chatId"] = chatId') || !host.includes('"messageId"] = messageId')) {
   throw new Error('Telegram download route does not map bounded identifiers to the relay contract.');
@@ -102,7 +106,10 @@ for (const expression of [
 for (const expression of [
   'function start_madeline_media_ipc_client',
   '$isDesktopVideo',
+  '$isDesktopVideoPoster',
   'start_madeline_media_ipc_client()',
+  'function tg_media_trace',
+  "tg_media_trace('thumb_ready'",
   '$cacheWholeFile = !$isDesktopVideo',
 ]) {
   if (!telegramRest.includes(expression)) throw new Error(`Telegram IPC video range contract missing: ${expression}`);
@@ -117,6 +124,9 @@ for (const expression of [
 if (!mediaLoader.includes("&& window.APP_CONFIG?.desktopMode !== true)")) {
   throw new Error('Desktop must not call the legacy Telegram batch-prefetch endpoint through its virtual UI host.');
 }
+if (!mediaLoader.includes("? '640px 0px'")) {
+  throw new Error('Telegram poster prefetch margin must stay ahead of the visible timeline.');
+}
 for (const expression of [
   '_bc_retryTimer',
   '_bc_retryGeneration',
@@ -126,6 +136,38 @@ for (const expression of [
   'canplay: clear, error',
 ]) {
   if (!mediaLoader.includes(expression)) throw new Error(`Media failure lifecycle contract missing: ${expression}`);
+}
+if (!mediaLoader.includes("target.dataset.bcHasPoster = '1'")) {
+  throw new Error('A real video poster must be visible before canplay.');
+}
+for (const expression of [
+  '_startDeferredVideo',
+  '_bindDeferredVideoStart',
+  "video.dataset.deferVideo !== '1'",
+  "target.dataset.deferVideo === '1'",
+  "video.preload = 'metadata'",
+  "if (video.dataset.deferVideo === '1') return;",
+]) {
+  if (!mediaLoader.includes(expression)) throw new Error(`Video poster activation contract missing: ${expression}`);
+}
+if (mediaLoader.includes("this._startDeferredVideo(video, false)")) {
+  throw new Error('A deferred video error must not start MP4 loading without Play.');
+}
+for (const expression of [
+  "const poster = att.preview || att.thumbnail || this.chat._videoPoster;",
+  "const deferredAttr = ' data-defer-video=\"1\"';",
+  "const preload = 'none';",
+  "const motion = detectedMotion === 'note' ? '' : detectedMotion;",
+]) {
+  if (!renderer.includes(expression)) throw new Error(`Every provider video must use the play-only stream contract: ${expression}`);
+}
+if (!mediaLoader.includes("element.tagName === 'VIDEO' && element.dataset.deferVideo === '1'")) {
+  throw new Error('A deferred video must not occupy a provider media queue before Play.');
+}
+const runtimeCss = fs.readFileSync('js/src/ui/styles/chat-runtime.css', 'utf8');
+if (!runtimeCss.includes('video[data-bc-has-poster="1"] { visibility:visible; }')
+  || !runtimeCss.includes('.video-player:has(video[data-bc-has-poster="1"]) > .bc-spin { display:none !important; }')) {
+  throw new Error('The loading surface must not hide a loaded video poster.');
 }
 
 console.log('desktop-telegram-download-contract: ok');

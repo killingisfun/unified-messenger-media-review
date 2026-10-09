@@ -1,12 +1,15 @@
-# Temporary Telegram media review snapshot
+# Temporary expert review snapshot
 
-This temporary public repository contains only the source files needed to
-review Telegram video/poster loading in Unified Messenger desktop. It is not
-a deployable application and intentionally excludes Git history, production
-configuration, credentials, session files, databases, logs and media files.
+This public repository is a deliberately limited, non-deployable code snapshot
+from Unified Messenger. It contains the current shared desktop UI plus the
+server-side media/MAX paths needed for an external error review. It intentionally
+excludes Git history, production configuration, credentials, device secrets,
+provider sessions, databases, logs, customer content and media files.
 
-Start with [the review packet](docs/expert-telegram-media-review.md).
+Start with the review packet matching the area you inspect:
 
-Please do not run, deploy or modify production from this snapshot. Review
-findings and suggested patches should be returned as a written recommendation
-or a small diff against these files.
+- [Shared UI and MAX/server review](docs/expert-ui-max-server-review.md)
+- [Telegram streaming-media review](docs/expert-telegram-media-review.md)
+
+Please do not run, deploy or modify production from this snapshot. Return
+findings as a written recommendation or a small diff against these files.
