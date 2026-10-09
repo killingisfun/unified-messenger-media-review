@@ -572,6 +572,7 @@ export class MediaLoader {
         delete el.dataset.bcMediaRetryScheduled;
         delete el.dataset.bcLateRecoveryScheduled;
         delete el.dataset.bcLateRecoveryTried;
+        delete el.dataset.bcBridgeRefreshUnavailable;
       };
       const error = () => {
         // The spinner and the video fallback observer both see the same
@@ -654,7 +655,8 @@ export class MediaLoader {
       // still-running request and gives the user no truthful outcome.
       const tries = Number(el.dataset.bcMediaRetryCount || '0');
       const unavailable = el.dataset.waUnavailable === '1';
-      if (tries >= 2 || unavailable) {
+      const bridgeRefreshUnavailable = el.dataset.bcBridgeRefreshUnavailable === '1';
+      if (tries >= 2 || unavailable || bridgeRefreshUnavailable) {
         surface.querySelectorAll('.bc-retry, .media-error').forEach(node => node.remove());
         holder.classList.remove('loading');
         holder.classList.remove('loaded');
@@ -665,7 +667,11 @@ export class MediaLoader {
         error.className = 'media-error';
         error.setAttribute('role', 'status');
         const label = document.createElement('span');
-        label.textContent = unavailable ? 'Файл недоступен в WhatsApp' : 'Не удалось загрузить вложение';
+        label.textContent = unavailable
+          ? 'Файл недоступен в WhatsApp'
+          : bridgeRefreshUnavailable
+            ? 'Ссылка на вложение истекла. Обновите чат.'
+            : 'Не удалось загрузить вложение';
         error.appendChild(label);
         surface.appendChild(error);
 
@@ -676,7 +682,7 @@ export class MediaLoader {
         // Keeping it to a single request avoids turning a long chat into a
         // background retry loop; WhatsApp's explicit historic-unavailable
         // marker is final and must not be probed again.
-        if (!unavailable
+        if (!unavailable && !bridgeRefreshUnavailable
           && el.tagName === 'IMG'
           && el.dataset.bcLateRecoveryTried !== '1'
           && el.dataset.bcLateRecoveryScheduled !== '1') {
@@ -728,7 +734,40 @@ export class MediaLoader {
     }
   }
 
-  _forceReloadMedia(el) {
+  async _renewBridgeMediaUrl(rawUrl) {
+    if (!this.chat._isCompatibilityBridge() || !rawUrl) return { url: rawUrl };
+    let current;
+    try {
+      current = new URL(rawUrl, window.location.href);
+      if (current.pathname !== '/bridge-media') return { url: rawUrl };
+      const ref = current.searchParams.get('ref') || '';
+      if (!/^[a-f0-9]{48}$/.test(ref)) return { url: rawUrl };
+      const endpoint = new URL('/bridge-media-refresh', window.location.href);
+      endpoint.searchParams.set('ref', ref);
+      const response = await fetch(endpoint.toString(), {
+        credentials: 'include',
+        cache: 'no-store',
+      });
+      let payload = null;
+      try { payload = await response.json(); } catch {}
+      if (response.ok && payload?.success === true && typeof payload.url === 'string') {
+        const renewed = new URL(payload.url, window.location.href);
+        const newRef = renewed.searchParams.get('ref') || '';
+        if (renewed.pathname === '/bridge-media' && /^[a-f0-9]{48}$/.test(newRef) && newRef !== ref) {
+          return { url: renewed.toString(), renewed: true };
+        }
+      }
+      // The bridge knows that this exact opaque reference has expired but has
+      // no stable attachment identity (for example an old MAX/CDN token).
+      // Do not disguise that state as a network retry of the same dead URL.
+      if (payload?.code === 'media_ref_expired' || payload?.code === 'media_ref_refresh_unavailable') {
+        return { url: rawUrl, unavailable: true };
+      }
+    } catch {}
+    return { url: rawUrl };
+  }
+
+  async _forceReloadMedia(el) {
     try {
       if (!el) return;
       const bump = (u) => {
@@ -740,16 +779,35 @@ export class MediaLoader {
       if (el.tagName === 'IMG') {
         let src = el.getAttribute('src') || el.dataset.lazySrc || '';
         src = this.chat._fixMediaUrl(src);
+        const renewal = await this._renewBridgeMediaUrl(src);
+        if (!el.isConnected || !this.chat._isActiveInstance()) return;
+        if (renewal.unavailable) {
+          el.dataset.bcBridgeRefreshUnavailable = '1';
+          el.dispatchEvent(new Event('error'));
+          return;
+        }
+        src = renewal.url;
         try {
           this.chat._prefetchMediaByUrl(src, el.getAttribute('alt') || 'image.jpg', el);
         } catch {}
-        el.setAttribute('src', bump(src));
+        const next = bump(src);
+        el.setAttribute('src', next);
+        const link = el.closest('a');
+        if (renewal.renewed && link) link.setAttribute('href', src);
       } else if (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') {
         const s = el.querySelector('source');
         if (s) {
           let src = s.getAttribute('src') || s.dataset.lazySrc || '';
           delete s.dataset.lazySrc;
           src = this.chat._fixMediaUrl(src);
+          const renewal = await this._renewBridgeMediaUrl(src);
+          if (!el.isConnected || !this.chat._isActiveInstance()) return;
+          if (renewal.unavailable) {
+            el.dataset.bcBridgeRefreshUnavailable = '1';
+            el.dispatchEvent(new Event('error'));
+            return;
+          }
+          src = renewal.url;
           try {
             this.chat._prefetchMediaByUrl(src, 'media.bin', el);
           } catch {}

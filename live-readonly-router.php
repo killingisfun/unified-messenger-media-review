@@ -1117,6 +1117,77 @@ function live_media_references(): array
     return $refs;
 }
 
+/**
+ * Keep a small, session-scoped renewal record after the short-lived relay
+ * handle expires. It contains the already validated typed target rather
+ * than a provider URL, and exists solely so the UI can request a new opaque
+ * handle after a delayed retry.
+ *
+ * @return array<string,array<string,mixed>>
+ */
+function live_media_refresh_hints(): array
+{
+    live_bridge_token();
+    $now = time();
+    $stored = $_SESSION['unified_bridge_media_refresh_hints'] ?? [];
+    $hints = [];
+    if (is_array($stored)) {
+        foreach ($stored as $id => $hint) {
+            if (!is_string($id) || !preg_match('/^[a-f0-9]{48}$/D', $id)
+                || !is_array($hint) || (int)($hint['expires_at'] ?? 0) < $now) continue;
+            $hints[$id] = $hint;
+        }
+    }
+    if (count($hints) > 500) {
+        uasort($hints, static fn(array $a, array $b): int => (int)($a['issued_at'] ?? 0) <=> (int)($b['issued_at'] ?? 0));
+        $hints = array_slice($hints, -350, null, true);
+    }
+    $_SESSION['unified_bridge_media_refresh_hints'] = $hints;
+    return $hints;
+}
+
+/** @param array<string,mixed> $ref */
+function live_media_ref_can_refresh(array $ref): bool
+{
+    $target = $ref['target'] ?? null;
+    if (!is_array($target)) return false;
+    // These targets are stable attachment identities. MAX sidecar tokens
+    // and provider CDN URLs are deliberately excluded: retrying either would
+    // merely replay an already expired upstream capability.
+    return in_array((string)($target['kind'] ?? ''), ['telegram', 'wa', 'wa_preview', 'local'], true);
+}
+
+/** @param array<string,mixed> $ref */
+function live_media_store_refresh_hint(string $id, array $ref): void
+{
+    $target = $ref['target'] ?? null;
+    if (!is_array($target)) return;
+    $refreshable = live_media_ref_can_refresh($ref);
+    $hints = live_media_refresh_hints();
+    $hints[$id] = [
+        // Do not persist an old MAX/CDN capability past the relay TTL. The
+        // kind alone lets the client receive a truthful reload-history
+        // result instead of retrying a dead URL.
+        'target' => $refreshable ? $target : null,
+        'target_kind' => live_media_scalar($target['kind'] ?? '', 32),
+        'source' => live_media_scalar($ref['source'] ?? '', 32),
+        'chat_id' => live_media_scalar($ref['chat_id'] ?? '', 512),
+        'chat_db_id' => (int)($ref['chat_db_id'] ?? 0),
+        'message_id' => live_media_scalar($ref['message_id'] ?? '', 512),
+        'issued_at' => (int)($ref['issued_at'] ?? time()),
+        'expires_at' => time() + 24 * 60 * 60,
+        'replacement_ref' => '',
+    ];
+    $_SESSION['unified_bridge_media_refresh_hints'] = $hints;
+}
+
+function live_media_relay_url_for_ref(string $id): string
+{
+    $workerOrigin = live_media_worker_origin_for_ref($id);
+    if ($workerOrigin !== '') return $workerOrigin . '/bridge-media?ref=' . rawurlencode($id);
+    return '/bridge-media?ref=' . rawurlencode($id);
+}
+
 /** @return array<string,array<string,mixed>> */
 function live_avatar_references(): array
 {
@@ -1175,7 +1246,7 @@ function live_media_relay_url(array $target, array $context): string
         $refs = array_slice($refs, -350, null, true);
     }
     $id = bin2hex(random_bytes(24));
-    $refs[$id] = [
+    $ref = [
         'target' => $target,
         'source' => live_media_scalar($context['source'] ?? '', 32),
         'chat_id' => live_media_scalar($context['chat_id'] ?? '', 512),
@@ -1184,18 +1255,61 @@ function live_media_relay_url(array $target, array $context): string
         'issued_at' => time(),
         'expires_at' => time() + 15 * 60,
     ];
+    $refs[$id] = $ref;
     $_SESSION['unified_bridge_media_refs'] = $refs;
+    live_media_store_refresh_hint($id, $ref);
 
     // Do not make an image queue behind the one-process UI bridge merely to
     // receive a local 307. When the dedicated worker pool is enabled, the
     // browser can request its selected local worker directly. The URL still
     // holds only a short-lived opaque ref, which the worker verifies against
     // the same PHP session before resolving the provider media target.
-    $workerOrigin = live_media_worker_origin_for_ref($id);
-    if ($workerOrigin !== '') {
-        return $workerOrigin . '/bridge-media?ref=' . rawurlencode($id);
+    return live_media_relay_url_for_ref($id);
+}
+
+/**
+ * Reissue one expired browser relay URL from its validated, stable attachment
+ * identity. The browser never receives a provider URL or the stored target.
+ *
+ * @return array{success:bool,url?:string,code?:string,message?:string}
+ */
+function live_media_refresh_relay_url(string $id): array
+{
+    if (!preg_match('/^[a-f0-9]{48}$/D', $id)) {
+        return ['success' => false, 'code' => 'invalid_media_ref', 'message' => 'Недействительная ссылка на вложение.'];
     }
-    return '/bridge-media?ref=' . rawurlencode($id);
+    $hints = live_media_refresh_hints();
+    $hint = $hints[$id] ?? null;
+    if (!is_array($hint)) {
+        return ['success' => false, 'code' => 'media_ref_expired', 'message' => 'Срок ссылки на вложение истёк. Обновите чат.'];
+    }
+    if (!live_media_ref_can_refresh($hint)) {
+        return ['success' => false, 'code' => 'media_ref_refresh_unavailable', 'message' => 'Ссылка на вложение истекла. Обновите чат для новой ссылки.'];
+    }
+    $replacement = live_media_scalar($hint['replacement_ref'] ?? '', 96);
+    $active = live_media_references();
+    if (preg_match('/^[a-f0-9]{48}$/D', $replacement) && isset($active[$replacement])) {
+        return ['success' => true, 'url' => live_media_relay_url_for_ref($replacement)];
+    }
+    $target = $hint['target'] ?? null;
+    if (!is_array($target)) {
+        return ['success' => false, 'code' => 'media_ref_expired', 'message' => 'Срок ссылки на вложение истёк. Обновите чат.'];
+    }
+    $url = live_media_relay_url($target, [
+        'source' => $hint['source'] ?? '',
+        'chat_id' => $hint['chat_id'] ?? '',
+        'chat_db_id' => (int)($hint['chat_db_id'] ?? 0),
+        'message_id' => $hint['message_id'] ?? '',
+    ]);
+    if (!preg_match('~(?:^|[?&])ref=([a-f0-9]{48})(?:&|$)~', $url, $match)) {
+        return ['success' => false, 'code' => 'media_ref_refresh_failed', 'message' => 'Не удалось обновить ссылку на вложение.'];
+    }
+    $hints = live_media_refresh_hints();
+    if (isset($hints[$id]) && is_array($hints[$id])) {
+        $hints[$id]['replacement_ref'] = $match[1];
+        $_SESSION['unified_bridge_media_refresh_hints'] = $hints;
+    }
+    return ['success' => true, 'url' => $url];
 }
 
 /** @param array<string,string> $target @param array<string,mixed> $context */
@@ -3757,6 +3871,13 @@ if ($path === '/bridge-media') {
     }
     live_delegate_media_request($path);
     live_media_relay();
+}
+if ($path === '/bridge-media-refresh') {
+    if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'GET' || !live_is_active_bridge()) {
+        live_json(['success' => false, 'code' => 'media_ref_refresh_forbidden', 'message' => 'Обновление ссылки недоступно.'], 405);
+    }
+    $result = live_media_refresh_relay_url(live_media_scalar($_GET['ref'] ?? '', 96));
+    live_json($result, ($result['success'] ?? false) === true ? 200 : 404);
 }
 if ($path === '/bridge-avatar') live_media_relay(true);
 if ($path === '/index.php') live_index();

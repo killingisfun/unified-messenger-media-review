@@ -70,6 +70,22 @@ PHP lint, Python compile, JS contracts and the private Release build passed.
 The public snapshot has the desktop host source but deliberately excludes the
 full desktop project file and binary, so its C# build runs only in private.
 
+## Compatibility bridge media-reference renewal
+
+The bridge used to retry an expired opaque media URL by appending `r=...` to
+the same reference. It now has a session-bound renewal route. Telegram,
+WhatsApp and local-cache attachments retain a typed attachment identity for
+24 hours and receive a new opaque `/bridge-media?ref=...` URL. Concurrent
+element errors reuse the same replacement reference. Provider URLs do not
+leave the bridge.
+
+MAX sidecar tokens and VK/Avito CDN URLs are excluded from that renewal store.
+They may already be expired upstream capabilities. The UI stops the retry and
+asks the user to update the chat, whose next history response creates a fresh
+reference. The private bridge fixture checks renewal, replacement identity and
+the MAX no-replay rule. `tests/bridge-media-refresh-contract.cjs` in this
+snapshot checks the browser route and final UI state.
+
 ## Deliberate privacy and safety boundaries
 
 - MAX contact cards project only fields MAX has already returned for the
@@ -120,9 +136,9 @@ peer already present in the selected direct chat, serializes a limited profile
 shape, and relays avatar/media through opaque references. The browser does not
 receive a provider URL or session credential.
 
-## Baseline
+## Snapshot boundary
 
-Public snapshot head: `f5cc75e` (`Preserve MAX sticker preview relay`). It
-contains the reviewed UI and server paths, but is intentionally not a full
-mirror. Conclusions about omitted infrastructure or provider integrations
-should be marked as out of scope rather than assumed.
+This document and the reviewed source changes are in the current public
+commit. The snapshot is intentionally not a full mirror. Conclusions about
+omitted infrastructure or provider integrations should be marked as out of
+scope rather than assumed.
