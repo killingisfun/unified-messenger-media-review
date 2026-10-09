@@ -16,7 +16,37 @@ export class MessageReceipts {
 
   _mergeMessageState(message) {
     if (!this.chat._messageStates) return message;
-    return this.chat._messageStates.merge(this.chat.source, this.chat.chatDbId, message);
+    const merged = this.chat._messageStates.merge(this.chat.source, this.chat.chatDbId, message);
+    const members = Array.isArray(message?._albumMessages) ? message._albumMessages : [];
+    if (String(message?.direction || '') !== 'out' || members.length < 2) return merged;
+    // A grouped document card is one visual message but several native
+    // receipts. Its indicator must describe the weakest component, never
+    // merely the last file used as the aggregate's canonical id.
+    const componentStates = members.map((member) => this.chat._messageStates.merge(
+      this.chat.source,
+      this.chat.chatDbId,
+      { ...member, direction: 'out' },
+    ));
+    const explicit = componentStates.map(item => String(item?.send_state || '').toLowerCase());
+    const acks = componentStates.map(item => Number(item?.ack || 0));
+    let ack = 0;
+    let sendState = 'pending';
+    if (acks.some(value => value < 0) || explicit.some(state => state === 'failed' || state === 'rejected')) {
+      ack = -1;
+      sendState = explicit.includes('rejected') ? 'rejected' : 'failed';
+    } else if (acks.some(value => value <= 0) || explicit.some(state => state === 'pending' || state === 'unknown')) {
+      sendState = explicit.includes('unknown') ? 'unknown' : 'pending';
+    } else if (acks.every(value => value >= 3)) {
+      ack = 3;
+      sendState = 'read';
+    } else if (acks.every(value => value >= 2)) {
+      ack = 2;
+      sendState = 'delivered';
+    } else {
+      ack = 1;
+      sendState = 'sent';
+    }
+    return { ...merged, ack, is_read: ack >= 3, send_state: sendState };
   }
 
   _paintSharedMessageStates() {
@@ -25,7 +55,7 @@ export class MessageReceipts {
       const id = String(node.dataset.id || node._originalData?.id || '');
       const receipt = this.chat._messageStates.get(this.chat.source, this.chat.chatDbId, id);
       if (!receipt) continue;
-      node._originalData = { ...node._originalData, ack: receipt.ack, is_read: receipt.is_read };
+      node._originalData = this._mergeMessageState({ ...node._originalData, ack: receipt.ack, is_read: receipt.is_read, send_state: receipt.send_state });
       this.chat._applyReceiptIcon(node.querySelector('.read-receipt i'), node._originalData, false);
     }
     for (const [id, node] of this.chat._batchOptimisticByMessageId || []) {

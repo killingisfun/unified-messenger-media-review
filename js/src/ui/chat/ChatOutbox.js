@@ -216,6 +216,18 @@ export class ChatOutbox {
     const ids = results.map(item => String(item.message_id));
     if (!ids.length) return;
     ids.forEach(id => this._registerBatchExpectedId(element, id, job.total || ids.length));
+    // A native id returned by a completed send is evidence that Telegram
+    // accepted that component.  Persist only that limited state so a later
+    // history row without receipt fields cannot regress it back to a clock.
+    // This is intentionally not delivery/read evidence.
+    for (const id of ids) {
+      this.chat._messageStates?.merge(this.chat.source, this.chat.chatDbId, {
+        id,
+        direction: 'out',
+        send_state: 'accepted',
+        ack: 1,
+      });
+    }
     element._batchMessages ??= new Map();
     this.chat._batchOptimisticByMessageId ??= new Map();
     const expected = new Set(this.chat._batchExpectedIds(element));
@@ -266,9 +278,6 @@ export class ChatOutbox {
     if (!element?.isConnected) return;
     const ids = this.chat._batchExpectedIds(element);
     if (ids.length !== Number(element.dataset.batchTotal) || !ids.every(id => element._batchMessages?.has(id))) return;
-    const provider = String(this.chat.source || '').toLowerCase();
-    const groupPrefix = provider === 'telegram' ? 'tg-local-batch:' : 'wa-local-batch:';
-    const groupId = `${groupPrefix}${element.dataset.sendRequestId || ids[0]}`;
     // Telegram documents (and some WPP document sends) have to travel as
     // separate provider messages.  They are nevertheless one user action.
     // Rendering every acknowledged row and asking a later DOM heuristic to
@@ -277,6 +286,14 @@ export class ChatOutbox {
     // IDs confirmed for this request.  Do not infer a batch from timestamps.
     const members = ids.map(id => element._batchMessages.get(id));
     if (members.some(message => !this._hasBatchAttachmentSnapshot(message))) return;
+    const nativeGroupIds = new Set(members
+      .map(message => String(message?.media_group_id || message?.group_id || message?.groupId || '').trim())
+      .filter(groupId => groupId && !groupId.startsWith('local-document-batch:') && !groupId.startsWith('tg-local-batch:') && !groupId.startsWith('wa-local-batch:')));
+    const provider = String(this.chat.source || '').toLowerCase();
+    const groupPrefix = provider === 'telegram' ? 'tg-local-batch:' : 'wa-local-batch:';
+    const groupId = nativeGroupIds.size === 1
+      ? [...nativeGroupIds][0]
+      : `${groupPrefix}${element.dataset.sendRequestId || ids[0]}`;
     const last = members[members.length - 1];
     const combined = {
       ...last,
@@ -286,7 +303,8 @@ export class ChatOutbox {
       group_id: groupId,
       _albumMessageIds: ids,
       _albumMessages: members,
-      _localDocumentBatch: true,
+      _localDocumentBatch: nativeGroupIds.size !== 1,
+      _nativeDocumentBatch: nativeGroupIds.size === 1,
     };
     // Each id was deliberately marked handled while it was held against a
     // realtime duplicate.  Make the renderer accept the canonical row again
@@ -299,7 +317,7 @@ export class ChatOutbox {
     }
     node.dataset.messageIds = ids.join(',');
     node.dataset.groupKey = `gid:${groupId}`;
-    node.dataset.localDocumentBatch = '1';
+    if (nativeGroupIds.size !== 1) node.dataset.localDocumentBatch = '1';
     node._groupMessages = members;
     ids.forEach(id => {
       this.chat.renderedMessageIds.add(id);

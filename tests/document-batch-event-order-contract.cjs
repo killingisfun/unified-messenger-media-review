@@ -17,7 +17,8 @@ source = `
   const motionKind = () => '';
   const getProvider = () => ({ id: 'telegram' });
   const hasKnownReactions = () => false;
-  const mergeMessageUpdate = (_, value) => value;
+  const mergeMessageUpdate = (_, previous, patch) => ({ ...previous, ...patch,
+    attachments: Array.isArray(patch.attachments) && patch.attachments.length ? patch.attachments : (previous.attachments || []) });
   const normalizeMessage = (_, value) => value;
   const renderMessageActions = () => '';
   const renderMessageQuote = () => '';
@@ -71,5 +72,14 @@ try {
 } finally {
   global.document = originalDocument;
 }
+
+// A short receipt and a full snapshot can appear in the same rendering
+// response. They represent one native message and must keep the attachment.
+const merged = new MessageRenderer(chat)._expandMessagesForReconciliation([
+  { id: '103', direction: 'out', ack: 1 },
+  child('103'),
+]);
+assert.equal(merged.length, 1, 'duplicate native IDs become one reconciliation record');
+assert.equal(merged[0].attachments.length, 1, 'the later full snapshot is not discarded after a receipt');
 
 console.log('document-batch-event-order-contract-ok');

@@ -42,7 +42,7 @@ assert.deepEqual(complete[0]._albumMessageIds, ['101', '102', '103'], 'aggregate
 assert.equal(complete[0].attachments.length, 3, 'aggregate preserves every document attachment');
 assert.match(complete[0].media_group_id, /^local-document-batch:out_files_12345678$/, 'synthetic group is request-scoped');
 
-const partial = albums._collapseLocalOutgoingDocumentBatches([
+const partial = new ChatAlbums(makeChat(accepted))._collapseLocalOutgoingDocumentBatches([
   documentMessage('101', 10), documentMessage('102', 25),
 ]);
 assert.equal(partial.length, 2, 'a partial history page is not presented as a complete batch');
@@ -70,5 +70,15 @@ assert.equal(nativeGrouped.length, 2, 'an exact native document group absorbs it
 assert.equal(nativeGrouped[0].id, 'in-1', 'unrelated message remains independently ordered');
 assert.deepEqual(nativeGrouped[1]._albumMessageIds, ['201', '202'], 'native group retains both provider IDs exactly once');
 assert.equal(nativeGrouped[1]._nativeDocumentBatch, true, 'native group is distinct from local journal reconstruction');
+
+// A native group often arrives one member at a time: a history page first,
+// then realtime (or the next page).  The open-chat registry must enrich the
+// existing identity rather than create a second single-file card.
+const acrossUpdates = new ChatAlbums(makeChat([]));
+const firstUpdate = acrossUpdates._collapseLocalOutgoingDocumentBatches([nativeFirst]);
+assert.equal(firstUpdate.length, 1, 'one observed native document remains one row until a sibling is known');
+const secondUpdate = acrossUpdates._collapseLocalOutgoingDocumentBatches([nativeSecond]);
+assert.equal(secondUpdate.length, 1, 'the later native child updates one group presentation');
+assert.deepEqual(secondUpdate[0]._albumMessageIds, ['201', '202'], 'the persistent registry retains the earlier exact child');
 
 console.log('local-document-batch-history-contract-ok');

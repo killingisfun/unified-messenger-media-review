@@ -2,7 +2,13 @@ import { getProvider } from '../../domain/providers.js';
 
 /** Incoming album assembly, author boundaries and grouped media/file DOM. */
 export class ChatAlbums {
-  constructor(chat) { this.chat = chat; }
+  constructor(chat) {
+    this.chat = chat;
+    // A history page and realtime event frequently contain different children
+    // of the same native Telegram document group. Keep only this open chat's
+    // exact id snapshots, never a clock-window guess.
+    this._documentGroupMembers = new Map();
+  }
 
   _pendingWhatsAppBatchElement() {
     if (getProvider(this.chat.source || '').id !== 'whatsapp' || !this.chat.messagesContainer) return null;
@@ -287,6 +293,7 @@ export class ChatAlbums {
     });
 
     const sorted = this.chat._sortHistoryMessages(annotated);
+    const currentGroupKeys = new Set();
     const groups = new Map();
     for (const [index, message] of sorted.entries()) {
       const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
@@ -296,7 +303,21 @@ export class ChatAlbums {
       // Direction is part of the identity: a malformed provider row may not
       // turn an incoming document into a local outgoing operation.
       const key = `${String(message?.direction || '')}:${groupId}`;
-      const record = groups.get(key) || { groupId, members: [] };
+      currentGroupKeys.add(key);
+      const known = this._documentGroupMembers.get(key) || new Map();
+      const id = this.chat._historyMessageId(message);
+      if (!id) continue;
+      const previous = known.get(id);
+      // A receipt-only partial update must not clear an already-known file.
+      known.set(id, {
+        ...(previous || {}),
+        ...message,
+        attachments: Array.isArray(message?.attachments) && message.attachments.length
+          ? message.attachments
+          : (previous?.attachments || []),
+      });
+      this._documentGroupMembers.set(key, known);
+      const record = groups.get(key) || { key, groupId, members: [] };
       record.members.push({ index, message });
       groups.set(key, record);
     }
@@ -305,8 +326,10 @@ export class ChatAlbums {
     const hiddenIndexes = new Set();
     for (const record of groups.values()) {
       const members = record.members;
-      if (members.length < 2) continue;
-      const childMessages = members.map(entry => entry.message);
+      if (!currentGroupKeys.has(record.key)) continue;
+      const known = this._documentGroupMembers.get(record.key);
+      const childMessages = this.chat._sortHistoryMessages([...(known?.values() || [])]);
+      if (childMessages.length < 2) continue;
       const ids = childMessages.map(message => this.chat._historyMessageId(message)).filter(Boolean);
       if (ids.length !== childMessages.length || new Set(ids).size !== ids.length) continue;
       const local = membership.get(ids[0]);
@@ -316,9 +339,12 @@ export class ChatAlbums {
       // a genuine partial/native presentation rather than invented success.
       if (record.groupId.startsWith('local-document-batch:')
         && (!local || local.ids.length !== ids.length || !local.ids.every(id => ids.includes(id)))) continue;
+      // Anchor the updated card at the newest member in the currently
+      // rendered slice.  It may include siblings learned on an older page.
       const lastEntry = members[members.length - 1];
+      const last = childMessages[childMessages.length - 1];
       aggregateAt.set(lastEntry.index, {
-        ...lastEntry.message,
+        ...last,
         text: childMessages.map(message => String(message?.text || '').trim()).find(Boolean) || '',
         attachments: childMessages.flatMap(message => Array.isArray(message?.attachments) ? message.attachments : []),
         groupId: record.groupId,
@@ -329,7 +355,7 @@ export class ChatAlbums {
         _localDocumentBatch: record.groupId.startsWith('local-document-batch:'),
         _nativeDocumentBatch: !record.groupId.startsWith('local-document-batch:'),
       });
-      members.slice(0, -1).forEach(entry => hiddenIndexes.add(entry.index));
+      members.filter(entry => entry.index !== lastEntry.index).forEach(entry => hiddenIndexes.add(entry.index));
     }
 
     return sorted.flatMap((message, index) => {

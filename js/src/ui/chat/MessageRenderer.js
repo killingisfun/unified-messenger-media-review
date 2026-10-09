@@ -392,15 +392,22 @@ export class MessageRenderer {
         if (m.startsWith('audio/')) return 'audio';
         return 'file';
       };
-      const detectedMotion = motionKind(att);
+      // A Telegram document can have an image MIME (and even retain a
+      // provider's photo-ish type).  The explicit document contract wins:
+      // "send as file" must never turn into a full-size photo, GIF or
+      // sticker merely because of its bytes.
+      const isDocument = this.chat._isDocumentAttachment(att);
+      const detectedMotion = isDocument ? '' : motionKind(att);
       // A video note is a playable video stream, not a sticker. Render it
       // through the shared video contract so merely scrolling cannot start
       // downloading it. Animated stickers and GIF-like motion keep their
       // existing autoplay behaviour.
       const motion = detectedMotion === 'note' ? '' : detectedMotion;
-      const attachmentType = detectedMotion === 'animation-image'
-        ? 'photo'
-        : detectedMotion === 'note' ? 'video' : normalizeAttType(att);
+      const attachmentType = isDocument
+        ? 'file'
+        : detectedMotion === 'animation-image'
+          ? 'photo'
+          : detectedMotion === 'note' ? 'video' : normalizeAttType(att);
       if (attachmentType === 'link') {
         const href = this.chat._safeRemoteUrl(att.external_url || att.url || '');
         const title = String(att.title || att.site_name || href || 'Ссылка');
@@ -730,7 +737,7 @@ export class MessageRenderer {
 
   _expandMessagesForReconciliation(messages) {
     const expanded = [];
-    const seen = new Set();
+    const byId = new Map();
     for (const source of messages || []) {
       // Album cards are presentation objects. Their children, not the card's
       // canonical (usually last) id, are the provider messages that can
@@ -742,12 +749,52 @@ export class MessageRenderer {
       for (const candidate of candidates) {
         const message = this.chat._messageForCurrentChat(candidate);
         const id = String(message?.id || '').trim();
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        expanded.push(message);
+        if (!id) continue;
+        const previous = byId.get(id);
+        if (!previous) {
+          byId.set(id, message);
+          expanded.push(message);
+          continue;
+        }
+        // A receipt can reach this method before the full history/realtime
+        // snapshot.  Merge the two records rather than letting whichever was
+        // first silently discard the attachment payload.
+        const merged = mergeMessageUpdate(this.chat.source, previous, message);
+        byId.set(id, merged);
+        const index = expanded.findIndex(entry => String(entry?.id || '') === id);
+        if (index >= 0) expanded[index] = merged;
       }
     }
     return expanded;
+  }
+
+  _removeRenderedDocumentGroupForRefresh(message) {
+    const ids = new Set((Array.isArray(message?._albumMessageIds) ? message._albumMessageIds : [])
+      .map(id => String(id || '').trim()).filter(Boolean));
+    if (ids.size < 2 || !this.chat.messagesContainer) return false;
+    const groupKey = `gid:${String(message?.media_group_id || message?.group_id || message?.groupId || '')}`;
+    let removed = false;
+    for (const node of [...this.chat.messagesContainer.querySelectorAll('.message')]) {
+      const nodeIds = new Set([
+        ...String(node.dataset?.messageIds || '').split(','),
+        String(node.dataset?.id || node._originalData?.id || ''),
+        ...(Array.isArray(node._groupMessages) ? node._groupMessages.map(item => String(item?.id || '')) : []),
+      ].map(id => id.trim()).filter(Boolean));
+      const sameGroup = groupKey !== 'gid:' && node.dataset?.groupKey === groupKey;
+      const overlaps = [...nodeIds].some(id => ids.has(id));
+      if (!sameGroup && !overlaps) continue;
+      nodeIds.forEach(id => {
+        this.chat.renderedMessageIds.delete(id);
+        this.chat._msgIdToGroupKey?.delete(id);
+      });
+      if (node.dataset?.groupKey) this.chat._groupKeyToEl?.delete(node.dataset.groupKey);
+      node.remove();
+      removed = true;
+    }
+    // The old DOM owned every component id. Let the freshly assembled
+    // aggregate claim them together instead of being rejected as a duplicate.
+    if (removed) ids.forEach(id => this.chat.renderedMessageIds.delete(id));
+    return removed;
   }
 
   renderMessagesBatch(messages, prepend = false, options = {}) {
@@ -782,6 +829,7 @@ export class MessageRenderer {
     const frag = document.createDocumentFragment();
     let addedCount = 0;
     messages.forEach(m => {
+      this._removeRenderedDocumentGroupForRefresh(m);
       if (this.chat._upsertIncomingNativeAlbum(m, frag)) { addedCount++; return; }
       const el = this.chat.renderMessage(m);
       if (el) {

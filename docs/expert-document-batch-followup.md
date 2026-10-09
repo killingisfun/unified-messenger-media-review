@@ -26,13 +26,24 @@ uses a time window for outgoing documents.
 
 1. `ChatOutbox` uses the durable native batch route for Telegram files,
    including the explicit `attachment_as_file` mode.
-2. `MessageRenderer` expands an aggregate into individual native children
-   before reconciliation; it then creates presentation groups only afterwards.
-3. `ChatAlbums._collapseLocalOutgoingDocumentBatches` combines exact native
-   grouped IDs even when another message is interleaved, while synthetic
-   request-scoped groups require all expected IDs.
-4. Receipt-only events update delivery status but cannot replace an attachment
-   snapshot or prematurely complete a batch.
+2. A `source_type: document` attachment now wins over image MIME, a legacy
+   `photo` type and animation detection. It must render as a file row, never
+   as a large gallery image.
+3. `MessageRenderer` expands an aggregate into individual native children
+   before reconciliation and merges duplicated native IDs, so a preceding
+   receipt cannot discard the later attachment snapshot.
+4. Every native ID returned as accepted is written as a sent (`ack: 1`) state,
+   not delivery or read. A multi-file card derives its indicator from every
+   child, rather than only the final child.
+5. `ChatAlbums._collapseLocalOutgoingDocumentBatches` combines exact native
+   grouped IDs even when another message is interleaved, and retains a
+   per-open-chat exact-ID registry so a sibling arriving in a later
+   history/realtime update refreshes one existing card. Synthetic
+   request-scoped groups still require all expected IDs.
+6. Receipt-only events update delivery status but cannot replace an attachment
+   snapshot or prematurely complete a batch. If provider children share an
+   authoritative native group ID, optimistic reconciliation preserves it
+   rather than replacing it with a local identity.
 
 The native flow has not been exercised against a production chat in this
 package. Do not assume it is verified merely because focused contracts pass.
@@ -67,6 +78,9 @@ Please trace the live ordering and module loading end-to-end:
   `ChatAlbums._collapseLocalOutgoingDocumentBatches` method for complete,
   partial, unknown-outcome and interleaved native-group cases.
 - `tests/document-batch-event-order-contract.cjs` verifies that a presentation
-  aggregate never becomes a single snapshot keyed by its last native ID.
+  aggregate never becomes a single snapshot keyed by its last native ID, and
+  that receipt-plus-full-message snapshots merge their attachments.
+- `tests/document-batch-receipt-state-contract.cjs` verifies accepted vs
+  delivered/failed state aggregation across a single visible file card.
 
 They establish intended local invariants, not proof of the full WebView flow.

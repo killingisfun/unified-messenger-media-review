@@ -60,6 +60,42 @@ assert.match(observed.dataset.groupKey, /^gid:tg-local-batch:out_files_12345678$
 assert.deepEqual([...chat.renderedMessageIds].sort(), ids, 'all native IDs remain handled after replacement');
 assert.equal(chat._batchOptimisticByMessageId.size, 0, 'no stale optimistic/native mapping survives');
 
+// Provider acceptance is not delivery/read evidence, but it must survive a
+// later history snapshot without receipt fields so the group does not regress
+// to a clock.
+const acceptedStates = [];
+const bindingChat = {
+  ...chat,
+  chatDbId: '42',
+  _messageStates: { merge(source, chatId, message) { acceptedStates.push({ source, chatId, message }); return message; } },
+  _rememberOutgoingOperation() {},
+  _registerBatchExpectedId(element, id) {
+    const known = new Set(String(element.dataset.expectedMessageIds || '').split(',').filter(Boolean));
+    known.add(id); element.dataset.expectedMessageIds = [...known].join(',');
+  },
+  _takeHeldBatchIncoming: () => [],
+  _releaseHeldBatchIncoming: () => {},
+  _completeBatchReconciliation: () => {},
+  messagesContainer: { querySelectorAll: () => [] },
+  _batchExpectedIds: element => String(element.dataset.expectedMessageIds || '').split(',').filter(Boolean),
+  renderedMessageIds: new Set(),
+  _batchOptimisticByMessageId: new Map(),
+};
+const bindingElement = {
+  isConnected: true,
+  dataset: { sendRequestId: 'request-accepted', batchTotal: '2', expectedMessageIds: '' },
+  querySelector: () => null,
+};
+const bindingOutbox = new ChatOutbox(bindingChat);
+bindingOutbox._bindBatchOptimisticMessage(bindingElement, {
+  status: 'completed', total: 2,
+  result: [{ success: true, message_id: '301' }, { success: true, message_id: '302' }],
+});
+assert.deepEqual(acceptedStates.map(entry => entry.message), [
+  { id: '301', direction: 'out', send_state: 'accepted', ack: 1 },
+  { id: '302', direction: 'out', send_state: 'accepted', ack: 1 },
+], 'each accepted component records sent, never delivered/read, state');
+
 // A receipt-only realtime event proves that an id exists, but it has no
 // attachment payload. It must not complete a document batch with a blank
 // child while the authoritative history snapshot is still on its way.
