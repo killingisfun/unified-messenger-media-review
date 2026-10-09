@@ -143,6 +143,25 @@ cannot retain a normalized empty string and erase previously rendered text.
 Own-profile browser data is scoped to provider plus account ID; it is never
 used to identify the current sender while the account is unbound.
 
+## Telegram desktop realtime scope — private implementation note
+
+Private commit `708abe6` fixes a production observation in the desktop client:
+a new Telegram message and its peer-read receipt were committed to SQLite, but
+the open conversation and its list row did not converge. The shared desktop
+subscriber correctly requires provider, account and chat to match before it
+applies an event. The Telegram webhook had emitted `new_message` with only a
+database chat ID and `message_read` without an account ID, so those events were
+rejected by the intentional isolation rule.
+
+The private webhook now derives the existing Telegram `self_id` once per
+request and includes `source: Telegram` plus `account_id` on every targeted
+Telegram notification: new message, read receipt, reaction and deletion. The
+UI isolation check was not relaxed. The production webhook is deliberately not
+included in this restricted public packet; an offline private contract fails
+if any of those event shapes loses its scope. Please review the shared UI
+matching rule and the documented event contract, rather than assuming a
+source-less Telegram event is safe to accept.
+
 The common text composer is explicitly `ready` for Telegram, WhatsApp, VK,
 Avito and MAX. Previously only MAX declared `message`; because the composer
 correctly treats a missing capability as unavailable, Telegram's textarea and
