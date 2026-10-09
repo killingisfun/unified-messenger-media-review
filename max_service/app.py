@@ -76,6 +76,18 @@ MAX_MEDIA_RELAY_BYTES = 200 * 1024 * 1024
 MAX_STICKER_RELAY_BYTES = 2 * 1024 * 1024
 
 
+async def read_stream_limited(stream: Any, limit: int) -> bytes:
+    """Read a complete finite response without trusting one TCP fragment."""
+    body = bytearray()
+    while True:
+        chunk = await stream.read(64 * 1024)
+        if not chunk:
+            return bytes(body)
+        body.extend(chunk)
+        if len(body) > limit:
+            raise web.HTTPRequestEntityTooLarge(max_size=limit, actual_size=len(body))
+
+
 async def max_upload_photo_compatible(
     upload_service: UploadService, photo: Photo, profile: bool = False
 ) -> AttachPhotoPayload:
@@ -849,9 +861,7 @@ class MaxAuthService:
                 # Normalize only a bounded gzip payload; ordinary static
                 # stickers keep their original bytes and MIME type.
                 if kind == "sticker":
-                    packed = await response.content.read(MAX_STICKER_RELAY_BYTES + 1)
-                    if len(packed) > MAX_STICKER_RELAY_BYTES:
-                        raise web.HTTPRequestEntityTooLarge(max_size=MAX_STICKER_RELAY_BYTES, actual_size=len(packed))
+                    packed = await read_stream_limited(response.content, MAX_STICKER_RELAY_BYTES)
                     try:
                         lottie = normalize_lottie_payload(packed)
                     except LottiePayloadError:
@@ -913,7 +923,10 @@ class MaxAuthService:
             self.realtime_events.publish("new_message", chat_id, native_id)
             if reply_to is not None:
                 self.reply_links.record(native_id, original, serialize_profile(client)["id"])
-            return {"success": True, "outcome": "accepted", "send_state": "sent", "message_id": native_id, "message_ids": [native_id], "attachment_count": len(attachments)}
+            # MAX represents a photo album as one native message containing
+            # several attachments. Tell the durable browser journal that this
+            # one ID is evidence for the whole album, not just file zero.
+            return {"success": True, "outcome": "accepted", "send_state": "sent", "message_id": native_id, "message_ids": [native_id], "attachment_count": len(attachments), "single_message_album": len(attachments) > 1}
         except (ApiError, UploadError):
             return {"success": False, "outcome": "rejected", "code": "max_provider_rejected", "message": "MAX отклонил вложение."}
         except (TimeoutError, ConnectionError, OSError):

@@ -1280,7 +1280,15 @@ async function checkUpdates() {
         // receives the DOM event below, where its lifecycle-bound subscriber
         // handles fetching/reaction state without a second browser socket.
         const activeChat = window.currentChat;
+        const eventSource = String(data.source || '').trim().toLowerCase();
+        const activeSource = String(activeChat?.source || '').trim().toLowerCase();
+        // The bridge socket carries WhatsApp events. A MAX/desktop event can
+        // share the generic event name and must never drive its provider-
+        // specific recovery path in an open WhatsApp pane. Legacy events
+        // without a source retain their existing bridge compatibility.
         if (window.APP_CONFIG?.desktopMode !== true
+            && activeSource === 'whatsapp'
+            && (!eventSource || eventSource === 'whatsapp')
             && typeof activeChat?._handleBridgeWhatsAppRealtimeEvent === 'function') {
             activeChat._handleBridgeWhatsAppRealtimeEvent(data);
         }

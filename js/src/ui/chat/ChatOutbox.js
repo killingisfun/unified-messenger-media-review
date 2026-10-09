@@ -6,6 +6,13 @@ import { renderMessageActions } from '../components/MessageActions.js';
 export class ChatOutbox {
   constructor(chat) { this.chat = chat; }
 
+  _revokeOptimisticObjectUrls(element) {
+    for (const url of element?._optimisticObjectUrls || []) {
+      try { URL.revokeObjectURL(url); } catch {}
+    }
+    if (element) element._optimisticObjectUrls = null;
+  }
+
   _isVisualOutgoingMessage(message) {
     if (String(message?.direction || '') !== 'out') return false;
     const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
@@ -39,6 +46,7 @@ export class ChatOutbox {
       const replacement = this.chat.renderMessage(syncedMessage);
       if (replacement && typeof element.replaceWith === 'function') {
         element.replaceWith(replacement);
+        this._revokeOptimisticObjectUrls(element);
         this.chat._pendingMediaRoots?.add?.(replacement);
         return replacement;
       }
@@ -746,6 +754,13 @@ export class ChatOutbox {
     };
     const element = this.chat.renderMessage(optimisticMessage);
     if (element) {
+      element._optimisticObjectUrls = new Set(optimisticMessage.attachments
+        .map((attachment) => String(attachment?.url || ''))
+        .filter((url) => url.startsWith('blob:')));
+      // A confirmed provider row can continue to use its local preview until
+      // the history snapshot supplies authenticated media URLs. The chat
+      // lifetime owns the final cleanup if that never happens.
+      this.chat.lifetime.add(() => this._revokeOptimisticObjectUrls(element));
       this.chat.messagesContainer.appendChild(element);
       // Optimistic images are local blob URLs. They do not pass through a
       // history batch, so activate them instead of leaving alt text in a tile.

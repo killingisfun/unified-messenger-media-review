@@ -237,6 +237,13 @@ export class MediaGallery {
           : 'Не удалось скачать файлы для архива. Обнови чат и попробуй ещё раз.';
         throw new Error(reason);
       }
+      if (failures.length) {
+        // A ZIP with an ordinary final name must contain the requested set.
+        // Do not leave a plausible-looking partial archive for someone to
+        // mistake as a successful backup; retry is safe because downloads are
+        // read-only GETs.
+        throw new Error(`Не удалось получить ${failures.length} из ${filesToZip.length} файлов. Архив не создан; повтори попытку.`);
+      }
       if (btnText) btnText.textContent = 'Генерация архива...';
       const zipBlob = await buildZipBlob(validFiles);
       const objectUrl = URL.createObjectURL(zipBlob);
@@ -257,9 +264,6 @@ export class MediaGallery {
       setTimeout(() => {
         URL.revokeObjectURL(objectUrl);
       }, 10 * 60 * 1000);
-      if (failures.length) {
-        window.alert(`Архив создан: ${validFiles.length} из ${filesToZip.length} файлов. Не удалось добавить: ${failures.map(item => item.name).join(', ')}`);
-      }
     } catch (err) {
       console.error('Ошибка при создании ZIP-архива:', err);
       if (btnText) btnText.textContent = 'Не удалось собрать архив';
@@ -378,7 +382,7 @@ export class MediaGallery {
       'application/pdf': 'pdf'
     };
     let name = String(title || '').trim()
-      .replace(/[\\/]+/g, '_')
+      .replace(/[\\/:*?"<>|]+/g, '_')
       .replace(/[\u0000-\u001f\u007f]/g, '')
       .replace(/^\.+/, '')
       .slice(0, 180);

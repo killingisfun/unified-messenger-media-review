@@ -101,9 +101,13 @@ export class MediaUrls {
     if (a.url && await headOk(a.url)) return a.url;
     if (a.url) {
       try {
-        await this.chat.api._asyncFetchRaw(a.url, {
+        const response = await this.chat.api._asyncFetchRaw(a.url, {
           method: 'GET'
         }, 7000);
+        // This is only a provider warm-up/probe. Release its body and the
+        // full-body deadline; a later HEAD decides whether the URL is ready.
+        await response?.body?.cancel?.();
+        response?.unifiedFinish?.();
       } catch {}
       await new Promise(res => setTimeout(res, 1000));
       if (await headOk(a.url)) return a.url;

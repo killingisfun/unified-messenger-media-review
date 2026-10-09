@@ -21,8 +21,25 @@ export class SendJournal {
 
   _normalizeOperationComponents(value, files = [], result = null, componentIndex = null, compositionKnown = true) {
     const existing = Array.isArray(value) ? value : [];
-    const resultIds = [result?.message_id, ...(Array.isArray(result?.message_ids) ? result.message_ids : [])]
-      .map(item => String(item || '').trim()).filter(Boolean);
+    const resultIds = [...new Set([result?.message_id, ...(Array.isArray(result?.message_ids) ? result.message_ids : [])]
+      .map(item => String(item || '').trim()).filter(Boolean))];
+    // MAX sends one provider message for a multi-photo album. It is not safe
+    // to assign that native ID to only the first local File (or to clone it
+    // across all of them): either form leaves a durable false partial result.
+    // Preserve it as one explicit album component, whose acknowledgement is
+    // later reconciled against that one exact history message.
+    if (result?.single_message_album === true && resultIds.length === 1) {
+      const fileCount = Array.isArray(files) && files.length
+        ? files.length
+        : Math.max(2, Number(result?.attachment_count || 0) || 0);
+      const totalSize = (Array.isArray(files) ? files : []).reduce((sum, file) => sum + Math.max(0, Number(file?.size || 0) || 0), 0);
+      return [{
+        key: 'album:0', index: 0, kind: 'album',
+        status: result?.success === true ? 'accepted' : 'unknown',
+        messageId: resultIds[0],
+        name: `Альбом MAX (${fileCount})`, size: totalSize,
+      }];
+    }
     let components = existing.map((item, index) => ({
       key: String(item?.key || `file:${item?.index ?? index}`), index: Number(item?.index ?? index),
       kind: String(item?.kind || 'file'), status: String(item?.status || 'unknown'),

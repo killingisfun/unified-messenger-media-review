@@ -24,7 +24,23 @@ export class MaxHistoryQueue {
     const normalizedKey = String(key || '');
     if (!normalizedKey) return Promise.reject(new Error('MAX history queue key is required.'));
     const existing = this.byKey.get(normalizedKey);
-    if (existing) return existing.promise;
+    if (existing) {
+      // A page that was queued for a chat which has since been closed must
+      // not poison a later return to the same cursor: its old promise would
+      // otherwise reject as stale instead of scheduling the fresh view.
+      // Never replace a job after it started; its provider outcome is then
+      // unknown and issuing a second request would defeat the single-flight
+      // safety of this queue.
+      let staleWhileQueued = false;
+      if (!existing.started && typeof existing.isCurrent === 'function') {
+        try { staleWhileQueued = !existing.isCurrent(); } catch { staleWhileQueued = true; }
+      }
+      if (!staleWhileQueued) return existing.promise;
+      const queuedIndex = this.pending.indexOf(existing);
+      if (queuedIndex >= 0) this.pending.splice(queuedIndex, 1);
+      this.byKey.delete(normalizedKey);
+      existing.reject(staleRequestError());
+    }
 
     let resolve;
     let reject;
@@ -32,6 +48,7 @@ export class MaxHistoryQueue {
       key: normalizedKey,
       run,
       isCurrent,
+      started: false,
       promise: new Promise((ok, fail) => { resolve = ok; reject = fail; }),
       resolve,
       reject,
@@ -48,6 +65,7 @@ export class MaxHistoryQueue {
     try {
       while (this.pending.length) {
         const job = this.pending.shift();
+        job.started = true;
         try {
           if (typeof job.isCurrent === 'function' && !job.isCurrent()) {
             throw staleRequestError();

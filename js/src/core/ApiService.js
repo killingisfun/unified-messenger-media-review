@@ -78,9 +78,35 @@ export class ApiService {
             };
         }
 
-        return fetch(url, opts).finally(() => {
+        // `fetch()` resolves as soon as response headers arrive. Keep the
+        // deadline alive while a JSON/send body is being consumed; otherwise
+        // a stalled body can wait forever after a seemingly successful HTTP
+        // response. Raw consumers may call `unifiedFinish()` after explicitly
+        // cancelling/ignoring a response body.
+        let finished = false;
+        const finish = () => {
+            if (finished) return;
+            finished = true;
             clearTimeout(t);
             detachCallerAbort?.();
+        };
+        return fetch(url, opts).then((response) => {
+            if (!response?.body) {
+                finish();
+                return response;
+            }
+            for (const reader of ['arrayBuffer', 'blob', 'formData', 'json', 'text']) {
+                const original = response[reader];
+                if (typeof original !== 'function') continue;
+                response[reader] = (...args) => Promise.resolve(original.apply(response, args)).finally(finish);
+            }
+            // Deliberately non-protocol metadata for the one raw caller that
+            // probes a URL without reading its body.
+            response.unifiedFinish = finish;
+            return response;
+        }, (error) => {
+            finish();
+            throw error;
         });
     }
 
