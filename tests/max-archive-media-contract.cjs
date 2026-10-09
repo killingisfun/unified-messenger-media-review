@@ -9,8 +9,10 @@ for (const token of [
   'service.persist_media_tokens()',
   'os.chmod(temp, 0o600)',
   'elif kind in {"audio", "sticker"}:',
-  'source_url = str((getattr(attachment, "lottie_url", None) if kind == "sticker" else None) or getattr(attachment, "url", "") or "")',
+  'source_url = str(source_url_override or (getattr(attachment, "lottie_url", None) if kind == "sticker" else None) or getattr(attachment, "url", "") or "")',
   'if kind in {"photo", "audio", "sticker"}:',
+  'def issue_sticker_preview_token(',
+  'entry["preview_ref"] = preview_token',
   'MAX_MEDIA_TOKEN_TTL_SECONDS)',
 ]) {
   if (!sidecar.includes(token)) throw Error(`missing MAX archived-media contract: ${token}`);

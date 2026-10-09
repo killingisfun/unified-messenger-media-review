@@ -741,7 +741,7 @@ class MaxAuthService:
             LOG.exception("MAX send failed")
             return {"success": False, "outcome": "unknown", "code": "max_send_unknown", "message": "Результат отправки MAX неизвестен. Проверьте чат перед повтором."}
 
-    def issue_media_token(self, chat_id: int, message_id: int, index: int, attachment: Any) -> str:
+    def issue_media_token(self, chat_id: int, message_id: int, index: int, attachment: Any, source_url_override: Any = None) -> str:
         raw_kind = getattr(attachment, "type", "")
         kind = str(getattr(raw_kind, "value", raw_kind)).lower()
         attachment_id = 0
@@ -755,7 +755,7 @@ class MaxAuthService:
         elif kind in {"audio", "sticker"}:
             # PyMax exposes these as direct CDN URLs; unlike files/videos,
             # there is no provider-side get_*_by_id method to refresh them.
-            source_url = str((getattr(attachment, "lottie_url", None) if kind == "sticker" else None) or getattr(attachment, "url", "") or "")
+            source_url = str(source_url_override or (getattr(attachment, "lottie_url", None) if kind == "sticker" else None) or getattr(attachment, "url", "") or "")
         if source_url.startswith("//"):
             source_url = "https:" + source_url
         if kind in {"photo", "audio", "sticker"}:
@@ -769,6 +769,16 @@ class MaxAuthService:
             now = time.time()
             self.media_tokens = {key: value for key, value in self.media_tokens.items() if value[6] > now}
         return token
+
+    def issue_sticker_preview_token(self, chat_id: int, message_id: int, index: int, attachment: Any) -> str:
+        """Serve a MAX static sticker rendition through the opaque relay."""
+        raw_kind = getattr(attachment, "type", "")
+        if str(getattr(raw_kind, "value", raw_kind)).lower() != "sticker":
+            return ""
+        # `lottie_url` is the animated payload.  When MAX also supplies `url`,
+        # keep that static preview separate so an image fallback never tries
+        # to decode compressed animation bytes.
+        return self.issue_media_token(chat_id, message_id, index, attachment, getattr(attachment, "url", ""))
 
     def issue_avatar_token(self, source_url: Any) -> str:
         """Return a persistent account-scoped opaque avatar reference.
@@ -1281,7 +1291,7 @@ async def collect_contact_profile(client: WebClient, chat_id: int, avatar_token_
     }
 
 
-def serialize_attachments(items: Iterable[Any], media_token_factory: Any = None) -> list[dict[str, Any]]:
+def serialize_attachments(items: Iterable[Any], media_token_factory: Any = None, sticker_preview_token_factory: Any = None) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     for index, item in enumerate(items or []):
         raw_type = getattr(item, "type", "unknown")
@@ -1324,6 +1334,9 @@ def serialize_attachments(items: Iterable[Any], media_token_factory: Any = None)
         if callable(media_token_factory):
             token = media_token_factory(index, item)
             if token: entry["media_ref"] = token
+        if attachment_type == "sticker" and callable(sticker_preview_token_factory):
+            preview_token = sticker_preview_token_factory(index, item)
+            if preview_token: entry["preview_ref"] = preview_token
         result.append(entry)
     return result
 
@@ -1332,6 +1345,7 @@ def serialize_message(
     message: Any,
     account_id: str,
     media_token_factory: Any = None,
+    sticker_preview_token_factory: Any = None,
     reply_hint: dict[str, str] | None = None,
     sender_names: dict[str, str] | None = None,
     sender_profiles: dict[str, dict[str, Any]] | None = None,
@@ -1369,7 +1383,7 @@ def serialize_message(
         "text": str(getattr(message, "text", "") or ""),
         "timestamp": int(getattr(message, "time", 0) or 0),
         "type": str(getattr(message, "type", "") or ""),
-        "attachments": serialize_attachments(getattr(message, "attaches", []), media_token_factory),
+        "attachments": serialize_attachments(getattr(message, "attaches", []), media_token_factory, sticker_preview_token_factory),
         "reply_to": reply_to,
         "reactions": [{"emoji": str(counter.reaction), "count": int(counter.count)} for counter in counters],
         "own_reaction": str(getattr(reaction_info, "your_reaction", "") or ""),
@@ -1648,6 +1662,7 @@ async def history(request: web.Request) -> web.Response:
                 item,
                 profile["id"],
                 lambda index, attachment, item=item: service.issue_media_token(chat_id, int(item.id), index, attachment),
+                lambda index, attachment, item=item: service.issue_sticker_preview_token(chat_id, int(item.id), index, attachment),
                 service.reply_links.lookup(getattr(item, "id", "")),
                 sender_names,
                 sender_profiles,
