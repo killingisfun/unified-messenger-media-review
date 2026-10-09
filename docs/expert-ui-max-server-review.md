@@ -167,6 +167,21 @@ Avito and MAX. Previously only MAX declared `message`; because the composer
 correctly treats a missing capability as unavailable, Telegram's textarea and
 related controls were disabled despite a working send adapter.
 
+## Desktop realtime queue isolation — private implementation note
+
+Private commit `e73ba1b` fixes a second production cause of stale desktop UI.
+The legacy WebSocket broadcaster and the authenticated desktop broadcaster had
+independent read offsets over one compacted event file. The legacy process can
+compact an event after its own delivery while desktop has not read it yet, so a
+healthy desktop WSS connection can still miss a new message or a read receipt.
+
+The private publisher now writes the same monotonic event record atomically to
+two queues; the desktop listener consumes only its own queue. The legacy queue
+and its compaction behaviour remain unchanged. This packet deliberately omits
+the production helper and queue location, but the review-relevant invariant is:
+**no two consumers with independent offsets may compact one another's event
+journal**. A private offline contract checks the separate writer and reader.
+
 `tests/common-boundary-contract.cjs` covers these shared client contracts.
 
 ## Deliberate privacy and safety boundaries
