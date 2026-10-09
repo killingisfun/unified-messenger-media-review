@@ -105,6 +105,31 @@ entries. `tests/media-refresh-followup-contract.cjs` checks these source
 boundaries. It is static coverage; provider media and account switching still
 need an authorised end-to-end run.
 
+## MAX attachment send and infrastructure health
+
+The previous review commit had two independent failures. `send_attachments`
+discarded the client returned by `writable_chat`, then used an undefined name
+when it prepared a reply or called MAX. The sidecar now keeps that validated
+client. A partial `last_message` in the MAX chat-list response may have no
+`chat_id`; serialization now omits renewable attachment identity for that
+partial item instead of raising an exception.
+
+The UI message "Не подтверждена работа провайдеров: MAX." is formed by the
+health handler when `HistoryRecoveryStatus::snapshot()` marks MAX unavailable
+or stale. It does not directly state that the MAX sidecar session is logged
+out. The review snapshot now includes:
+
+- `review/infrastructure-health-handler.php`, the extracted API handler;
+- `src/Services/HistoryRecoveryStatus.php`, the MAX recovery-state rules;
+- `tests/max-attachment-send-contract.py` and
+  `tests/max-message-serialization-contract.py`, offline regressions for the
+  attachment client and partial chat-list message.
+
+The live incident that prompted this update had a connected, read-only MAX
+sidecar while the recovery row retained `provider_unavailable` during its
+backoff. Review the recovery path and its queue budget separately from the
+session-status route.
+
 ## Deliberate privacy and safety boundaries
 
 - MAX contact cards project only fields MAX has already returned for the
@@ -131,6 +156,7 @@ need an authorised end-to-end run.
 | Active compatibility/read-only bridge | `legacy-bridge-router.php`, `live-readonly-router.php` |
 | MAX PHP adapters | `max_api.php`, `max_auth.php`, `src/Services/MaxClient.php` |
 | MAX private sidecar | `max_service/app.py`, `persistent_state.py`, `media_compat.py`, `upload_compat.py` |
+| Infrastructure status | `review/infrastructure-health-handler.php`, `src/Services/HistoryRecoveryStatus.php` |
 | External media facade | `media_stream.php` |
 | Provider capability contract | `config/provider-capabilities.json` |
 | Regression contracts | `tests/max-*-contract.py`, `tests/bridge-profile-contract.php`, `tests/profile-trigger-contract.cjs` |

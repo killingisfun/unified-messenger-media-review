@@ -977,7 +977,7 @@ class MaxAuthService:
         return await self.send_attachments(chat_id, [(name, mime, raw)], caption, reply_to)
 
     async def send_attachments(self, chat_id: int, files: list[tuple[str, str, bytes]], caption: str, reply_to: int | None) -> dict[str, Any]:
-        _, chat = await self.writable_chat(chat_id)
+        client, chat = await self.writable_chat(chat_id)
         if chat is None:
             return {"success": False, "outcome": "rejected", "code": "max_chat_unavailable", "message": "Этот чат MAX недоступен подключённому аккаунту."}
         if not files or len(files) > MAX_TRAINING_BATCH_FILES or sum(len(raw) for _, _, raw in files) > MAX_TRAINING_BATCH_BYTES:
@@ -1018,8 +1018,7 @@ class MaxAuthService:
 
     async def message_reactions(self, chat_id: int, message_id: int) -> dict[str, Any]:
         """Read one reaction snapshot from a chat available to this account."""
-        client = self.connected_client()
-        _, chat = await self.writable_chat(chat_id)
+        client, chat = await self.writable_chat(chat_id)
         if chat is None:
             return {"success": False, "code": "max_chat_unavailable", "message": "Этот чат MAX недоступен подключённому аккаунту."}
         try:
@@ -1445,6 +1444,14 @@ def serialize_message(
         reply_to = reply_hint
     sender_id = str(getattr(message, "sender", "") or "")
     sender_profile = (sender_profiles or {}).get(sender_id, {})
+    try:
+        attachment_chat_id = int(getattr(message, "chat_id", None))
+    except (TypeError, ValueError):
+        attachment_chat_id = None
+    try:
+        attachment_message_id = int(getattr(message, "id", None))
+    except (TypeError, ValueError):
+        attachment_message_id = None
     return {
         "id": str(message.id),
         "chat_id": str(message.chat_id) if getattr(message, "chat_id", None) is not None else "",
@@ -1456,7 +1463,7 @@ def serialize_message(
         "text": str(getattr(message, "text", "") or ""),
         "timestamp": int(getattr(message, "time", 0) or 0),
         "type": str(getattr(message, "type", "") or ""),
-        "attachments": serialize_attachments(getattr(message, "attaches", []), media_token_factory, sticker_preview_token_factory, int(message.chat_id), int(message.id), account_id),
+        "attachments": serialize_attachments(getattr(message, "attaches", []), media_token_factory, sticker_preview_token_factory, attachment_chat_id, attachment_message_id, account_id),
         "reply_to": reply_to,
         "reactions": [{"emoji": str(counter.reaction), "count": int(counter.count)} for counter in counters],
         "own_reaction": str(getattr(reaction_info, "your_reaction", "") or ""),
