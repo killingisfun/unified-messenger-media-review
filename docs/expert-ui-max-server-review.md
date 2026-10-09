@@ -130,6 +130,26 @@ sidecar while the recovery row retained `provider_unavailable` during its
 backoff. Review the recovery path and its queue budget separately from the
 session-status route.
 
+## Shared UI boundary contracts
+
+History now has one strict client envelope normalizer. An explicit empty
+array is a valid empty chat; an incomplete successful object or provider error
+raises a visible history failure instead of clearing the conversation. The
+server follows the same rule and rejects invalid adapter history envelopes.
+
+Partial message updates distinguish omitted text from an intentional empty
+edit. WPP's `message_text` updates the bubble, while a receipt-only update
+cannot retain a normalized empty string and erase previously rendered text.
+Own-profile browser data is scoped to provider plus account ID; it is never
+used to identify the current sender while the account is unbound.
+
+The common text composer is explicitly `ready` for Telegram, WhatsApp, VK,
+Avito and MAX. Previously only MAX declared `message`; because the composer
+correctly treats a missing capability as unavailable, Telegram's textarea and
+related controls were disabled despite a working send adapter.
+
+`tests/common-boundary-contract.cjs` covers these shared client contracts.
+
 ## Deliberate privacy and safety boundaries
 
 - MAX contact cards project only fields MAX has already returned for the

@@ -214,6 +214,21 @@ export class ApiService {
         );
     }
 
+    _normalizeHistoryResponse(data) {
+        if (!data || typeof data !== 'object' || Array.isArray(data)) {
+            throw new Error('Сервис вернул некорректный ответ истории сообщений.');
+        }
+        if (data.success === false) {
+            throw new Error(data.message || 'Сервис не вернул историю сообщений.');
+        }
+        if (Array.isArray(data.messages)) return data;
+        if (data.messages && typeof data.messages === 'object' && Array.isArray(data.messages.items)) {
+            return { ...data, ...data.messages, messages: data.messages.items };
+        }
+        if (Array.isArray(data.items)) return { ...data, messages: data.items };
+        throw new Error(data.message || 'Сервис вернул неполную историю сообщений.');
+    }
+
     async clearWhatsappData() {
         return this._asyncFetchJson('index.php?action=clear_whatsapp_data', {
             method: 'POST',
@@ -532,12 +547,7 @@ async getLocalMessages(dbId) {
         const data = await this._getHistoryPage(
             source, chatId, dbId, '', url, isWhats ? 25000 : (isAvito ? 9000 : 45000), isCurrent
         );
-        // The PHP router returns the paginated contract as messages.items,
-        // while older clients expected messages to be the array itself.
-        if (data && data.messages && !Array.isArray(data.messages) && Array.isArray(data.messages.items)) {
-            return { ...data, ...data.messages, messages: data.messages.items };
-        }
-        return data;
+        return this._normalizeHistoryResponse(data);
     }
 
     async getOlderMessages(source, chatId, beforeId, dbId = '', isCurrent = null, signal = null) {
@@ -551,10 +561,7 @@ async getLocalMessages(dbId) {
         const data = await this._getHistoryPage(
             source, chatId, dbId, beforeId, url, isWhats ? 25000 : (isAvito ? 9000 : 45000), isCurrent, signal
         );
-        if (data && data.messages && !Array.isArray(data.messages) && Array.isArray(data.messages.items)) {
-            return { ...data, ...data.messages, messages: data.messages.items };
-        }
-        return data;
+        return this._normalizeHistoryResponse(data);
     }
 
     async getNewMessages(dbId, sinceTimestamp) {

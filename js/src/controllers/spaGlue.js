@@ -1,6 +1,7 @@
 import { originalAvatar, chatAvatar, setHeaderAvatar } from '../ui/avatar.js';
 import { createChatBySource } from '../ui/services/index.js?v=20261004-chat-zip-r3';
 import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
+import { writeScopedSelfProfile } from '../core/selfProfileCache.js';
 
         const app = document.getElementById('app');
         const listEl = document.getElementById('chat-list-container');
@@ -423,24 +424,13 @@ import { ApiService } from '../core/ApiService.js?v=20261004-perf-r1';
             if (contactProfileRefreshButton) contactProfileRefreshButton.hidden = true;
             contactModalElement.classList.add('profile-loading');
 
-            const cacheKey = `unified-provider-self-profile-v3:${context.source.toLowerCase()}`;
-            try {
-                const saved = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
-                if (saved?.profile && Number(saved.fetchedAt || 0) > Date.now() - 10 * 60 * 1000) {
-                    renderContactProfile(saved.profile, { ...context, self: true, title: 'Мой аккаунт', key: `self:${context.source}` });
-                    if (loading) loading.classList.add('d-none');
-                    modal.show();
-                    return;
-                }
-            } catch {}
-
             modal.show();
             try {
                 const response = await new ApiService().getProviderSelfProfile(context.source);
                 if (!isCurrentContactProfile(context)) return;
                 const profile = response?.profile || {};
                 renderContactProfile(profile, { ...context, self: true, title: 'Мой аккаунт', key: `self:${context.source}` });
-                try { sessionStorage.setItem(cacheKey, JSON.stringify({ fetchedAt: Date.now(), profile })); } catch {}
+                writeScopedSelfProfile(context.source, profile);
             } catch {
                 if (!isCurrentContactProfile(context)) return;
                 if (fields) fields.innerHTML = '<div class="text-muted small py-2">Не удалось получить сведения аккаунта.</div>';

@@ -508,22 +508,9 @@ if (hasFreshIncoming) {
       if (this.chat.loader) this.chat.loader.style.display = 'block';
       const data = await this.chat._getInitialMessages();
       if (!this.chat._isActiveInstance()) return;
-      if (data?.success === false) {
-        throw new Error(data.message || 'Сервис не вернул историю сообщений.');
-      }
       this.chat._paintPinnedMessage(data?.pinnedMessage ?? data?.pinned_message);
-      let messages = [];
-      let nextCursor = undefined;
-      if (Array.isArray(data?.messages?.items)) {
-        messages = data.messages.items;
-        nextCursor = data.messages.hasOwnProperty('nextCursor') ? data.messages.nextCursor : undefined;
-      } else if (Array.isArray(data?.messages)) {
-        messages = data.messages;
-        nextCursor = data.hasOwnProperty('nextCursor') ? data.nextCursor : undefined;
-      } else if (Array.isArray(data?.items)) {
-        messages = data.items;
-        nextCursor = data.hasOwnProperty('nextCursor') ? data.nextCursor : undefined;
-      }
+      let messages = data.messages;
+      let nextCursor = Object.prototype.hasOwnProperty.call(data, 'nextCursor') ? data.nextCursor : undefined;
       const haveCursorField = (nextCursor !== undefined);
       this.chat._localHistoryOverflow = [];
       this.chat._deferredHistoryCursor = null;
@@ -634,19 +621,8 @@ if (hasFreshIncoming) {
         }, 12000);
         const data = await this.chat._getOlderMessages(this.chat.oldestMessageId, requestController.signal);
         if (!this.chat._isActiveInstance()) return;
-        if (data?.success === false) {
-          throw new Error(data.message || 'Сервис не вернул следующую страницу сообщений.');
-        }
-        if (Array.isArray(data?.messages?.items)) {
-          messages = data.messages.items;
-          nextCursor = data.messages.hasOwnProperty('nextCursor') ? data.messages.nextCursor : undefined;
-        } else if (Array.isArray(data?.messages)) {
-          messages = data.messages;
-          nextCursor = data.hasOwnProperty('nextCursor') ? data.nextCursor : undefined;
-        } else if (Array.isArray(data?.items)) {
-          messages = data.items;
-          nextCursor = data.hasOwnProperty('nextCursor') ? data.nextCursor : undefined;
-        }
+        messages = data.messages;
+        nextCursor = Object.prototype.hasOwnProperty.call(data, 'nextCursor') ? data.nextCursor : undefined;
         const haveCursorField = nextCursor !== undefined;
         const networkPage = this.chat._stashHistoryOverflow(messages, nextCursor, haveCursorField, requestedCursor);
         messages = networkPage.items;

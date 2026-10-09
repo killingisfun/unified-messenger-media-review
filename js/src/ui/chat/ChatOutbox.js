@@ -1,5 +1,6 @@
 import { originalAvatar } from '../avatar.js';
 import { getProvider, normalizeMessage, validateAttachmentSelection } from '../../domain/providers.js';
+import { readScopedSelfProfile, selfProfileAccountKey, writeScopedSelfProfile } from '../../core/selfProfileCache.js';
 import { renderMessageActions } from '../components/MessageActions.js';
 
 /** Composer snapshots, serialized delivery and optimistic send reconciliation. */
@@ -263,25 +264,18 @@ export class ChatOutbox {
   }
 
   _accountKeyFromProfile(profile) {
-    const source = String(this.chat.source || '').trim().toLowerCase();
-    const direct = profile?.account_id ?? profile?.accountId ?? profile?.user_id ?? profile?.userId
-      ?? profile?.id ?? profile?.phone ?? profile?.username ?? '';
-    const field = Array.isArray(profile?.fields) ? profile.fields.find(item => /^(id|user id|phone|телефон|аккаунт)$/i.test(String(item?.label || '').trim())) : null;
-    const value = String(direct || field?.value || '').trim();
-    return value ? `${source}:${value}` : '';
+    return selfProfileAccountKey(this.chat.source, profile);
   }
 
   async _primeOutgoingAccountKey() {
     const source = String(this.chat.source || '').trim();
     if (!source || typeof this.chat.api?.getProviderSelfProfile !== 'function') return;
-    const cacheKey = `unified-provider-self-profile-v3:${source.toLowerCase()}`;
     try {
-      let profile = null;
-      const cached = JSON.parse(sessionStorage.getItem(cacheKey) || 'null');
-      if (cached?.profile && Number(cached.fetchedAt || 0) > Date.now() - 10 * 60 * 1000) profile = cached.profile;
+      let profile = readScopedSelfProfile(source, this.chat._outgoingAccountKey);
       if (!profile) {
         const response = await this.chat.api.getProviderSelfProfile(source);
         profile = response?.profile || null;
+        writeScopedSelfProfile(source, profile);
       }
       const accountKey = this.chat._accountKeyFromProfile(profile);
       if (!accountKey || !this.chat._isActiveInstance()) return;

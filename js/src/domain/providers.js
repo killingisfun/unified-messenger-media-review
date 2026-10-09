@@ -301,6 +301,15 @@ function hasOwn(raw, field) {
   return Boolean(raw && Object.prototype.hasOwnProperty.call(raw, field));
 }
 
+/** Distinguish an explicit cleared text from a partial event with no text. */
+export function hasKnownText(raw = {}) {
+  if (typeof raw?.textKnown === 'boolean') return raw.textKnown;
+  if (hasOwn(raw, 'text') || hasOwn(raw, 'message') || hasOwn(raw, 'body') || hasOwn(raw, 'message_text')) return true;
+  const content = raw?.content;
+  return Boolean(content && typeof content === 'object'
+    && (hasOwn(content, 'text') || hasOwn(content, 'body') || hasOwn(content, 'caption')));
+}
+
 /**
  * A reaction array is meaningful only when its producer explicitly supplied a
  * snapshot. `[]` means “there are no reactions”; an omitted field means “we
@@ -339,11 +348,14 @@ export function normalizeMessage(source, raw = {}) {
   const direction = raw.direction === 'out' || raw.out === true || raw.fromMe === true ? 'out' : 'in';
   const reactionsKnown = hasKnownReactions(raw);
   const attachmentsKnown = hasKnownAttachments(raw);
+  const textKnown = hasKnownText(raw);
   const reactions = reactionsKnown ? (raw.reactionsDetailed ?? raw.reactions ?? []) : [];
   return {
     ...raw,
     id,
-    text: String(raw.text ?? raw.message ?? raw.body ?? raw.content?.text ?? ''),
+    text: String(raw.text ?? raw.message ?? raw.body ?? raw.message_text
+      ?? raw.content?.text ?? raw.content?.body ?? raw.content?.caption ?? ''),
+    textKnown,
     timestamp: normalizedTimestamp(raw.timestamp ?? raw.date ?? raw.created ?? raw.t),
     direction,
     attachments: normalizeAttachments(raw),
@@ -363,6 +375,7 @@ export function normalizeMessage(source, raw = {}) {
  */
 export function mergeMessageUpdate(source, previous = {}, patch = {}) {
   const before = normalizeMessage(source, previous);
+  const incomingHasText = hasKnownText(patch);
   const incomingHasReactions = hasKnownReactions(patch);
   const incomingHasAttachments = hasKnownAttachments(patch);
   // Normalize alternate transport names before spreading a patch over prior
@@ -370,6 +383,21 @@ export function mergeMessageUpdate(source, previous = {}, patch = {}) {
   // wins over a new `{ reactions: [] }` or `{ items: [...] }` snapshot.
   const incoming = normalizeMessage(source, patch);
   const overlay = { ...patch };
+  if (incomingHasText) {
+    overlay.text = incoming.text;
+  } else {
+    delete overlay.text;
+    delete overlay.message;
+    delete overlay.body;
+    delete overlay.message_text;
+    if (overlay.content && typeof overlay.content === 'object') {
+      const content = { ...overlay.content };
+      delete content.text;
+      delete content.body;
+      delete content.caption;
+      overlay.content = content;
+    }
+  }
   if (incomingHasReactions) {
     // Assign `undefined`, rather than delete: `before` is spread first and
     // may carry an old alternate property that must be masked explicitly.
@@ -384,6 +412,7 @@ export function mergeMessageUpdate(source, previous = {}, patch = {}) {
   const merged = normalizeMessage(source, {
     ...before,
     ...overlay,
+    textKnown: incomingHasText ? true : before.textKnown,
     reactionsKnown: incomingHasReactions ? true : before.reactionsKnown,
     attachmentsKnown: incomingHasAttachments ? true : before.attachmentsKnown,
   });
@@ -395,6 +424,10 @@ export function mergeMessageUpdate(source, previous = {}, patch = {}) {
   if (!incomingHasAttachments) {
     merged.attachments = before.attachments;
     merged.attachmentsKnown = before.attachmentsKnown;
+  }
+  if (!incomingHasText) {
+    merged.text = before.text;
+    merged.textKnown = before.textKnown;
   }
   return merged;
 }

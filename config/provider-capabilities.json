@@ -18,6 +18,10 @@
     "reply": {
       "state": "ready"
     },
+    "message": {
+      "state": "ready",
+      "reason": "Текстовые сообщения Telegram поддерживаются."
+    },
     "attachment": {
       "state": "ready",
       "constraints": {
@@ -97,6 +101,10 @@
     "reply": {
       "state": "ready"
     },
+    "message": {
+      "state": "ready",
+      "reason": "Текстовые сообщения WhatsApp поддерживаются."
+    },
     "attachment": {
       "state": "ready",
       "constraints": {
@@ -162,6 +170,10 @@
     },
     "reply": {
       "state": "ready"
+    },
+    "message": {
+      "state": "ready",
+      "reason": "Текстовые сообщения VK поддерживаются."
     },
     "attachment": {
       "state": "ready",
@@ -230,6 +242,10 @@
     "reply": {
       "state": "not_implemented",
       "reason": "Публичный API Avito пока не документирует отправку ответа на конкретное сообщение."
+    },
+    "message": {
+      "state": "ready",
+      "reason": "Текстовые сообщения Avito поддерживаются."
     },
     "attachment": {
       "state": "ready",
