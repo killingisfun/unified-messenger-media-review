@@ -70,7 +70,6 @@ public sealed class DesktopUiHost : IDisposable
         var entryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var completed = 0;
         var added = 0;
-        var failures = new List<string>();
 
         try
         {
@@ -89,19 +88,17 @@ public sealed class DesktopUiHost : IDisposable
                             UniqueArchiveEntryName(ResolveDownloadedName(item.Name, response), entryNames),
                             CompressionLevel.Fastest);
                         await using var entryStream = entry.Open();
-                        await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
-                        await source.CopyToAsync(entryStream, 81920, cancellationToken);
+                        await CopyResponseBodyAsync(response, entryStream, cancellationToken);
                         added += 1;
                         RecordTransport("archive_item", (int)response.StatusCode, $"added={added}");
                     }
                     catch (Exception exception) when (exception is not OperationCanceledException)
                     {
-                        if (failures.Count < 5) failures.Add(DesktopDownloadLibrary.NormalizeFileName(item.Name));
-                        // Keep enough structural information to distinguish a
-                        // rejected local route from a remote/provider error,
-                        // without writing source URLs or credentials to disk.
+                        // A ZIP entry may already contain a truncated body.
+                        // Do not publish an archive after any failed entry.
                         RecordTransport("archive_item", 0,
                             $"failed={completed + 1}:{exception.GetType().Name}:{SafeDiagnostic(exception.Message)}");
+                        throw;
                     }
                     finally
                     {
@@ -111,21 +108,18 @@ public sealed class DesktopUiHost : IDisposable
                 }
             }
 
-            if (added == 0)
-                return new DesktopArchiveResult(false, "Не удалось получить ни одного файла для архива.", null, 0, failures);
-
             File.Move(temporaryPath, finalPath, overwrite: false);
-            RecordTransport("archive_complete", 200, $"added={added} failed={failures.Count}");
-            return new DesktopArchiveResult(true, null, Path.GetFileName(finalPath), added, failures);
+            RecordTransport("archive_complete", 200, $"added={added}");
+            return new DesktopArchiveResult(true, null, Path.GetFileName(finalPath), added, []);
         }
         catch (OperationCanceledException)
         {
-            return new DesktopArchiveResult(false, "Создание архива отменено.", null, added, failures);
+            return new DesktopArchiveResult(false, "Создание архива отменено.", null, added, []);
         }
         catch (Exception exception)
         {
             RecordTransport("archive_complete", 0, exception.GetType().Name);
-            return new DesktopArchiveResult(false, "Не удалось создать архив.", null, added, failures);
+            return new DesktopArchiveResult(false, "Не удалось создать архив.", null, added, []);
         }
         finally
         {
@@ -153,9 +147,8 @@ public sealed class DesktopUiHost : IDisposable
                 throw new HttpRequestException($"HTTP {(int)response.StatusCode}");
             finalPath = library.ReservePath(ResolveDownloadedName(request.Name, response));
             temporaryPath = finalPath + ".partial";
-            await using var source = await response.Content.ReadAsStreamAsync(cancellationToken);
             await using (var output = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true))
-                await source.CopyToAsync(output, 81920, cancellationToken);
+                await CopyResponseBodyAsync(response, output, cancellationToken);
             File.Move(temporaryPath, finalPath, overwrite: false);
             RecordTransport("download_item", (int)response.StatusCode, "saved=1");
             return new DesktopDownloadResult(true, null, Path.GetFileName(finalPath));
@@ -659,6 +652,14 @@ public sealed class DesktopUiHost : IDisposable
         }
 
         throw new InvalidOperationException("Archive media path is not permitted.");
+    }
+
+    private static async Task CopyResponseBodyAsync(HttpResponseMessage response, Stream destination, CancellationToken cancellationToken)
+    {
+        using var bodyDeadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        bodyDeadline.CancelAfter(TimeSpan.FromMinutes(2));
+        await using var source = await response.Content.ReadAsStreamAsync(bodyDeadline.Token);
+        await source.CopyToAsync(destination, 81920, bodyDeadline.Token);
     }
 
     private static string UniqueArchiveEntryName(string proposedName, ISet<string> usedNames)

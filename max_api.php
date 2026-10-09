@@ -111,12 +111,47 @@ if ($resource === 'media') {
     $curl = curl_init(MAX_API_SIDECAR_BASE . '/v1/media/' . rawurlencode($ref));
     if ($curl === false) { http_response_code(502); exit; }
     $headers = ['Accept: */*']; if ($range !== '') $headers[] = 'Range: ' . $range;
-    curl_setopt_array($curl, [CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => 180, CURLOPT_HEADER => true, CURLOPT_CUSTOMREQUEST => $method, CURLOPT_NOBODY => $method === 'HEAD', CURLOPT_HTTPHEADER => $headers]);
-    $raw = curl_exec($curl); $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE); $headerSize = (int)curl_getinfo($curl, CURLINFO_HEADER_SIZE); $contentType = (string)curl_getinfo($curl, CURLINFO_CONTENT_TYPE); $headerBlock = is_string($raw) ? substr($raw, 0, $headerSize) : ''; curl_close($curl);
-    if (!is_string($raw) || !in_array($status, [200, 206, 416], true)) { http_response_code($status ?: 502); exit; }
-    $body = substr($raw, $headerSize); $mime = strtok($contentType, ';'); header('Content-Type: ' . (is_string($mime) && preg_match('#^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$#', $mime) ? $mime : 'application/octet-stream'));
-    foreach (['Content-Length' => '~^Content-Length:\s*([0-9]+)\s*$~im', 'Content-Range' => '~^Content-Range:\s*(bytes\s+\d+-\d+/(?:\d+|\*))\s*$~im', 'Accept-Ranges' => '~^Accept-Ranges:\s*(bytes)\s*$~im'] as $name => $pattern) { if (preg_match($pattern, $headerBlock, $match)) header($name . ': ' . $match[1]); }
-    http_response_code($status); header('Cache-Control: private, max-age=900'); header('X-Content-Type-Options: nosniff'); if ($method !== 'HEAD') echo $body; exit;
+    $status = 0; $contentType = 'application/octet-stream'; $contentLength = null; $contentRange = null; $acceptRanges = null; $emitted = false;
+    $captureHeaders = static function ($ch, string $line) use (&$status, &$contentType, &$contentLength, &$contentRange, &$acceptRanges): int {
+        $trimmed = trim($line);
+        if (preg_match('~^HTTP/\\S+\\s+(\\d+)~', $trimmed, $match)) {
+            $status = (int)$match[1]; $contentType = 'application/octet-stream'; $contentLength = null; $contentRange = null; $acceptRanges = null;
+        } elseif (stripos($line, 'Content-Type:') === 0) {
+            $value = trim(substr($line, strlen('Content-Type:')));
+            if (preg_match('#^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+(?:;[^\\r\\n]*)?$#', $value)) $contentType = $value;
+        } elseif (stripos($line, 'Content-Length:') === 0) {
+            $value = trim(substr($line, strlen('Content-Length:')));
+            if (preg_match('/^[0-9]+$/', $value)) $contentLength = $value;
+        } elseif (stripos($line, 'Content-Range:') === 0) {
+            $value = trim(substr($line, strlen('Content-Range:')));
+            if (preg_match('~^bytes (?:\\d+-\\d+|\\*)/(?:\\d+|\\*)$~', $value)) $contentRange = $value;
+        } elseif (stripos($line, 'Accept-Ranges:') === 0) {
+            if (strtolower(trim(substr($line, strlen('Accept-Ranges:')))) === 'bytes') $acceptRanges = 'bytes';
+        }
+        return strlen($line);
+    };
+    $emitHeaders = static function () use (&$status, &$contentType, &$contentLength, &$contentRange, &$acceptRanges): void {
+        $code = $status ?: 502;
+        http_response_code($code);
+        header('Content-Type: ' . $contentType);
+        header('Cache-Control: private, max-age=900'); header('X-Content-Type-Options: nosniff');
+        // A 416 response has no body. Do not forward a non-zero upstream length.
+        if ($code !== 416 && $contentLength !== null) header('Content-Length: ' . $contentLength);
+        if ($contentRange !== null) header('Content-Range: ' . $contentRange);
+        if ($acceptRanges !== null) header('Accept-Ranges: ' . $acceptRanges);
+    };
+    curl_setopt_array($curl, [CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => 180, CURLOPT_CUSTOMREQUEST => $method, CURLOPT_NOBODY => $method === 'HEAD', CURLOPT_HTTPHEADER => $headers, CURLOPT_HEADERFUNCTION => $captureHeaders, CURLOPT_WRITEFUNCTION => static function ($ch, string $chunk) use (&$status, &$emitted, $emitHeaders): int {
+        if ($status !== 200 && $status !== 206) return 0;
+        if (!$emitted) { $emitHeaders(); $emitted = true; }
+        echo $chunk;
+        if (function_exists('ob_flush')) @ob_flush();
+        flush();
+        return strlen($chunk);
+    }]);
+    $ok = curl_exec($curl); $status = (int)curl_getinfo($curl, CURLINFO_RESPONSE_CODE) ?: $status; curl_close($curl);
+    if (!$emitted && in_array($status, [200, 206, 416], true)) { $emitHeaders(); $emitted = true; }
+    if (!$emitted || (!$ok && $status !== 416)) { if (!headers_sent()) http_response_code($status ?: 502); }
+    exit;
 }
 if ($resource === 'profile') max_api_forward('GET', '/v1/profile');
 if ($resource === 'contact_profile') {

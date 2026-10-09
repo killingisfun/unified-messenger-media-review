@@ -53,7 +53,9 @@ $captureHeaders = static function ($ch, string $line) use (&$contentType, &$cont
 $emitHeaders = static function () use (&$contentType, &$contentLength, &$contentRange, &$status, $download, $safeName): void {
     if (($status < 200 || $status >= 300) && $status !== 416) return;
     header('Content-Type: ' . ($contentType !== '' ? $contentType : 'application/octet-stream'));
-    if ($contentLength !== null && ctype_digit($contentLength)) header('Content-Length: ' . $contentLength);
+    // A 416 response is header-only. Do not retain an upstream error-page
+    // length when this relay deliberately sends no body.
+    if ($status !== 416 && $contentLength !== null && ctype_digit($contentLength)) header('Content-Length: ' . $contentLength);
     if ($contentRange !== null && $contentRange !== '') header('Content-Range: ' . $contentRange);
     header('Accept-Ranges: bytes');
     header('Content-Disposition: ' . ($download ? 'attachment' : 'inline') . '; filename="' . addcslashes($safeName, '\\\\"') . '"');

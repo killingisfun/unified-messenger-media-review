@@ -5,6 +5,18 @@ export class ChatRealtime {
   constructor(chat) { this.chat = chat; }
 
   _realtimeEventMatchesActiveChat(data) {
+    const activeProvider = getProvider(this.chat.source || '').id;
+    const eventProvider = getProvider(data?.source ?? data?.provider ?? data?.message?.source ?? '').id;
+    // Desktop realtime is shared by every connected provider. A matching
+    // numeric chat id alone is never enough: IDs overlap between providers.
+    if (window.APP_CONFIG?.desktopMode === true) {
+      if (!eventProvider || eventProvider !== activeProvider) return false;
+      const expectedAccount = String(this.chat._outgoingAccountKey || '').toLowerCase();
+      const eventAccount = String(data?.account_id ?? data?.provider_account_id
+        ?? data?.message?.account_id ?? data?.message?.provider_account_id ?? '').trim().toLowerCase();
+      if (expectedAccount && !expectedAccount.endsWith(':unbound')
+          && (!eventAccount || `${eventProvider}:${eventAccount}` !== expectedAccount)) return false;
+    }
     const sameDb = data?.chat_db_id != null && String(data.chat_db_id) === String(this.chat.chatDbId || '');
     const eventChatId = data?.chatId ?? data?.chat_id;
     const sameCid = eventChatId != null && String(eventChatId) === String(this.chat.chatId || '');

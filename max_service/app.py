@@ -60,6 +60,8 @@ LOG = logging.getLogger("unified_max")
 MAX_QR_DATA_URL_BYTES = 512 * 1024
 MAX_READ_LIMIT = 50
 MAX_READ_TIMEOUT_SECONDS = 12
+MAX_HISTORY_QUEUE_TIMEOUT_SECONDS = 3
+MAX_SHORT_READ_QUEUE_TIMEOUT_SECONDS = 3
 MAX_TRAINING_TEXT_LIMIT = 4000
 MAX_TRAINING_REACTIONS = frozenset({"👍", "❤️", "😂", "😮", "😢", "🙏"})
 MAX_TRAINING_ATTACHMENT_BYTES = 10 * 1024 * 1024
@@ -497,6 +499,9 @@ class MaxAuthService:
         # short profile/list/reaction reads. asyncio.Lock queues waiters, so a
         # second history request waits instead of opening another RPC.
         self.history_lock = asyncio.Lock()
+        self._read_schedule = asyncio.Condition()
+        self._read_busy = False
+        self._short_read_waiters = 0
         self.write_lock = asyncio.Lock()
         self.realtime_events = RealtimeEventJournal(work_dir / "realtime-events.json")
         self.reply_links = ReplyLinkJournal(work_dir / "reply-links.json")
@@ -643,6 +648,13 @@ class MaxAuthService:
             (self.work_dir / self.session_name).unlink(missing_ok=True)
         except OSError:
             pass
+        # A later login, including a different MAX account, must never reuse
+        # opaque references minted for the just-logged-out account.
+        self.media_tokens.clear()
+        try:
+            self.media_token_journal.path.unlink(missing_ok=True)
+        except OSError:
+            LOG.warning("MAX media-token journal could not be removed on logout", exc_info=True)
         self.runtime = RuntimeState(state=AuthState.DISCONNECTED)
         return self.runtime.snapshot()
 
@@ -655,16 +667,42 @@ class MaxAuthService:
             )
         return client
 
-    async def read(self, callback: Any) -> Any:
-        """Serialize read RPCs; never invoke the provider before login is ready."""
+    async def read(self, callback: Any, *, history: bool = False, timeout: float = MAX_READ_TIMEOUT_SECONDS) -> Any:
+        """Serialize provider reads and let short reads pass queued history pages."""
         client = self.connected_client()
-        async with self.read_lock:
-            return await asyncio.wait_for(callback(client), timeout=MAX_READ_TIMEOUT_SECONDS)
+        loop = asyncio.get_running_loop()
+        queue_deadline = loop.time() + (MAX_HISTORY_QUEUE_TIMEOUT_SECONDS if history else MAX_SHORT_READ_QUEUE_TIMEOUT_SECONDS)
+        async with self._read_schedule:
+            if not history:
+                self._short_read_waiters += 1
+            try:
+                while self._read_busy or (history and self._short_read_waiters > 0):
+                    remaining = queue_deadline - loop.time()
+                    if remaining <= 0:
+                        raise TimeoutError()
+                    await asyncio.wait_for(self._read_schedule.wait(), timeout=remaining)
+                self._read_busy = True
+            finally:
+                if not history:
+                    self._short_read_waiters -= 1
+        try:
+            async with self.read_lock:
+                return await asyncio.wait_for(callback(client), timeout=timeout)
+        finally:
+            async with self._read_schedule:
+                self._read_busy = False
+                self._read_schedule.notify_all()
 
     async def read_history(self, callback: Any) -> Any:
-        """Run exactly one full history collection at a time."""
-        async with self.history_lock:
-            return await self.read(callback)
+        """Run one history page at a time without starving short MAX reads."""
+        try:
+            await asyncio.wait_for(self.history_lock.acquire(), timeout=MAX_HISTORY_QUEUE_TIMEOUT_SECONDS)
+        except TimeoutError:
+            raise TimeoutError()
+        try:
+            return await self.read(callback, history=True)
+        finally:
+            self.history_lock.release()
 
     async def mark_chat_read(self, chat_id: int) -> dict[str, Any]:
         """Mark the newest known message read after the UI shows the chat."""
@@ -763,11 +801,19 @@ class MaxAuthService:
                 return ""
         elif kind not in {"file", "video"} or attachment_id < 1:
             return ""
+        now = time.time()
+        self.media_tokens = {key: value for key, value in self.media_tokens.items() if value[6] > now}
+        identity = (chat_id, message_id, index, kind, attachment_id, source_url)
+        for token, entry in self.media_tokens.items():
+            if entry[:6] == identity:
+                return token
+        # Keep the in-memory and persisted limits identical. Evict the entry
+        # that expires first before adding a new opaque reference.
+        while len(self.media_tokens) >= self.media_token_journal.limit:
+            oldest = min(self.media_tokens, key=lambda token: self.media_tokens[token][6])
+            self.media_tokens.pop(oldest, None)
         token = secrets.token_urlsafe(32)
-        self.media_tokens[token] = (chat_id, message_id, index, kind, attachment_id, source_url, time.time() + MAX_MEDIA_TOKEN_TTL_SECONDS)
-        if len(self.media_tokens) > 512:
-            now = time.time()
-            self.media_tokens = {key: value for key, value in self.media_tokens.items() if value[6] > now}
+        self.media_tokens[token] = (*identity, now + MAX_MEDIA_TOKEN_TTL_SECONDS)
         return token
 
     def issue_sticker_preview_token(self, chat_id: int, message_id: int, index: int, attachment: Any) -> str:
@@ -778,7 +824,10 @@ class MaxAuthService:
         # `lottie_url` is the animated payload.  When MAX also supplies `url`,
         # keep that static preview separate so an image fallback never tries
         # to decode compressed animation bytes.
-        return self.issue_media_token(chat_id, message_id, index, attachment, getattr(attachment, "url", ""))
+        static_url = str(getattr(attachment, "url", "") or "")
+        if not static_url:
+            return ""
+        return self.issue_media_token(chat_id, message_id, index, attachment, static_url)
 
     def issue_avatar_token(self, source_url: Any) -> str:
         """Return a persistent account-scoped opaque avatar reference.
@@ -883,10 +932,14 @@ class MaxAuthService:
                     headers["Content-Type"] = static_media_mime(packed, mime)
                     headers["Content-Length"] = str(len(packed))
                     return web.Response(body=packed, headers=headers)
-                for name in ("Content-Length", "Content-Range", "Accept-Ranges"):
+                for name in ("Content-Range", "Accept-Ranges"):
                     value = response.headers.get(name)
                     if value:
                         headers[name] = value
+                if response.status != 416:
+                    value = response.headers.get("Content-Length")
+                    if value:
+                        headers["Content-Length"] = value
                 stream = web.StreamResponse(status=response.status, headers=headers)
                 await stream.prepare(http_request)
                 if http_request.method == "HEAD" or response.status == 416:

@@ -358,6 +358,9 @@ export class MessageRenderer {
       // the whole history page (MAX albums exposed this as a chat-load error).
       const mime = String(att.mime || '').toLowerCase();
       const filename = att.filename || att.title || 'file';
+      const safeFilename = this.chat._escapeHtml(String(filename));
+      const safeVideoMime = /^video\/[a-z0-9.+-]{1,80}$/.test(mime) ? mime : 'video/mp4';
+      const safeAudioMime = /^audio\/[a-z0-9.+-]{1,80}$/.test(mime) ? mime : 'audio/mpeg';
       const lbHref = this.chat._toLightboxOpenUrl(openUrl || displayUrl, filename);
       const normalizeAttType = (att) => {
         const t = (att.type || '').toLowerCase();
@@ -480,12 +483,14 @@ export class MessageRenderer {
         // This lets Chromium request normal byte ranges after activation,
         // without opening a full media response for timeline rendering.
         const preload = 'none';
-        const src = displayUrl || '';
-        return `<div class="${videoHolderClass}"><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr} aria-label="${videoLabel} ${filename}" data-lazy="1" data-fallback-label="${this.chat._escapeHtml(filename)}" data-download-url="${this.chat._withDlParam(lbHref)}"><source data-lazy-src="${src}" type="${att.mime || 'video/mp4'}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${this.chat._withDlParam(lbHref)}" download="${filename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
+        const src = this.chat._escapeHtml(displayUrl || '');
+        const safeDownload = this.chat._escapeHtml(this.chat._withDlParam(lbHref));
+        return `<div class="${videoHolderClass}"><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr} aria-label="${this.chat._escapeHtml(`${videoLabel} ${filename}`)}" data-lazy="1" data-fallback-label="${safeFilename}" data-download-url="${safeDownload}"><source data-lazy-src="${src}" type="${safeVideoMime}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
       }
       if (attachmentType === 'audio') {
-        const src = displayUrl || '';
-        return `<div class="media-holder"><audio controls preload="metadata" data-lazy="1"><source data-lazy-src="${src}" type="${att.mime || 'audio/mpeg'}"></audio><div class="media-actions mt-1 small"><a class="media-download" href="${this.chat._withDlParam(lbHref)}" download="${filename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать аудио</span></a></div></div>`;
+        const src = this.chat._escapeHtml(displayUrl || '');
+        const safeDownload = this.chat._escapeHtml(this.chat._withDlParam(lbHref));
+        return `<div class="media-holder"><audio controls preload="metadata" data-lazy="1"><source data-lazy-src="${src}" type="${safeAudioMime}"></audio><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать аудио</span></a></div></div>`;
       }
       if (attachmentType === 'sticker') {
         const src = displayUrl || openUrl || '';

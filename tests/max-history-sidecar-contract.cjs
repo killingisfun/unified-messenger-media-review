@@ -4,8 +4,9 @@ const source = fs.readFileSync('max_service/app.py', 'utf8');
 for (const token of [
   'self.history_lock = asyncio.Lock()',
   'async def read_history(self, callback: Any) -> Any:',
-  'async with self.history_lock:',
-  'return await self.read(callback)',
+  'await asyncio.wait_for(self.history_lock.acquire(), timeout=MAX_HISTORY_QUEUE_TIMEOUT_SECONDS)',
+  'return await self.read(callback, history=True)',
+  'self.history_lock.release()',
   'payload = await service.read_history(collect)',
 ]) {
   if (!source.includes(token)) throw new Error(`missing MAX history sidecar contract: ${token}`);

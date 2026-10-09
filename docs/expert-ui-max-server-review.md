@@ -44,6 +44,32 @@ Release build, `desktop-win-x64-review-fixes-v35`, copied the listed UI files
 without hash differences and was started successfully. Its packaging rule is
 in `desktop/UnifiedMessenger.Desktop/UnifiedMessenger.Desktop.csproj`.
 
+## Follow-up after review
+
+The following source changes respond to the second review round:
+
+- `ChatRealtime.js` now requires a matching provider and, when known, account
+  before a desktop realtime event can match a chat ID.
+- `DesktopUiHost.cs` abandons a ZIP after any entry read fails. Its archive and
+  ordinary native download paths apply a two-minute body-read deadline.
+- `MessageRenderer.js` escapes interpolated video/audio metadata and limits
+  MIME strings to a safe media-token form.
+- `max_api.php` streams the MAX sidecar response through cURL callbacks. It
+  does not buffer a whole MAX video in PHP. Both MAX and external media relays
+  omit Content-Length on a 416 response body that they do not send.
+- `max_service/app.py` bounds read-queue waits, favours already queued short
+  reads over another history page, bounds and reuses opaque media tokens, clears
+  them on logout, and emits no sticker preview reference without a static URL.
+- `src/Services/SendResult.php` is included for the MAX album boundary. It
+  retains `single_message_album` and `attachment_count` after adapter result
+  normalization, so `SendJournal.js` receives the same evidence the sidecar
+  returned.
+
+`tests/expert-review-followup-contract.cjs` covers these source boundaries.
+PHP lint, Python compile, JS contracts and the private Release build passed.
+The public snapshot has the desktop host source but deliberately excludes the
+full desktop project file and binary, so its C# build runs only in private.
+
 ## Deliberate privacy and safety boundaries
 
 - MAX contact cards project only fields MAX has already returned for the
