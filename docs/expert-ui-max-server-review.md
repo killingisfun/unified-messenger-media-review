@@ -23,6 +23,27 @@ in these areas:
 Prioritise reproducible findings. For each issue, include affected file and
 line, impact, a minimal scenario, and a narrowly scoped patch suggestion.
 
+## Review update
+
+This snapshot includes the fixes for the review findings reported on
+2026-10-09. The shared UI changes are in source so they can be inspected:
+
+- `MediaUrls.js` and `ApiService.js` keep a response timeout through body
+  consumption; `media_stream.php` relays headers and body from one upstream
+  request and preserves Range responses.
+- `MaxHistoryQueue.js` replaces an unstarted stale history request; MAX
+  history reads in `max_service/app.py` use a separate lock.
+- `mainPage.js` rejects non-WhatsApp events in the WhatsApp receipt path.
+- `SendJournal.js` accepts MAX's one-message album confirmation; `ChatOutbox.js`
+  and `MediaGallery.js` clean up Blob URLs and avoid publishing a partial ZIP.
+- `max_service/app.py` reads sticker data in bounded chunks and keeps an
+  opaque static preview separate from the Lottie payload.
+
+The desktop artifact is not included in this source-only repository. A local
+Release build, `desktop-win-x64-review-fixes-v35`, copied the listed UI files
+without hash differences and was started successfully. Its packaging rule is
+in `desktop/UnifiedMessenger.Desktop/UnifiedMessenger.Desktop.csproj`.
+
 ## Deliberate privacy and safety boundaries
 
 - MAX contact cards project only fields MAX has already returned for the
@@ -75,7 +96,7 @@ receive a provider URL or session credential.
 
 ## Baseline
 
-Private source baseline: `2c44aba` (`Expose public MAX contact profile
-fields`). This review snapshot was refreshed from that baseline on 2026-10-09.
-It is intentionally not a full mirror; conclusions about omitted infrastructure
-or provider integrations should be marked as out of scope rather than assumed.
+Public snapshot head: `f5cc75e` (`Preserve MAX sticker preview relay`). It
+contains the reviewed UI and server paths, but is intentionally not a full
+mirror. Conclusions about omitted infrastructure or provider integrations
+should be marked as out of scope rather than assumed.
