@@ -728,36 +728,61 @@ export class MessageRenderer {
     return el;
   }
 
+  _expandMessagesForReconciliation(messages) {
+    const expanded = [];
+    const seen = new Set();
+    for (const source of messages || []) {
+      // Album cards are presentation objects. Their children, not the card's
+      // canonical (usually last) id, are the provider messages that can
+      // acknowledge an optimistic send. Reconciliation must therefore happen
+      // before this renderer turns children into a visual group.
+      const candidates = Array.isArray(source?._albumMessages) && source._albumMessages.length
+        ? source._albumMessages
+        : [source];
+      for (const candidate of candidates) {
+        const message = this.chat._messageForCurrentChat(candidate);
+        const id = String(message?.id || '').trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        expanded.push(message);
+      }
+    }
+    return expanded;
+  }
+
   renderMessagesBatch(messages, prepend = false, options = {}) {
     if (!this.chat._isActiveInstance() || !messages || !messages.length) return;
     const stickToBottom = !prepend && options?.stickToBottom === true;
     messages = messages
       .map((message) => this.chat._messageForCurrentChat(message))
       .filter((message) => message.id);
-    this.chat._reconcileOutgoingOperations(messages);
+    const nativeMessages = this._expandMessagesForReconciliation(messages);
+    this.chat._reconcileOutgoingOperations(nativeMessages);
     // Store every explicit child snapshot before collapsing an album.  The
     // card renders one aggregate, while Telegram reports reactions by native
     // child id; without this, a reaction on an earlier photo disappears after
     // a reload even though the history record contains it.
-    for (const message of messages) {
+    for (const message of nativeMessages) {
       if (!hasKnownReactions(message)) continue;
       this.chat._onMessageReactionsUpdated(message.id, this.chat._normalizeReactions(message.reactionsDetailed ?? message.reactions ?? []));
     }
+    // Consume every authoritative native message first. In particular, never
+    // pass an aggregate into _consumeOptimisticMessage: it would store all
+    // files under the aggregate's last native id and either duplicate a file
+    // or leave the optimistic batch waiting for a child that cannot arrive.
+    const displayMessages = nativeMessages.filter((message) => !this.chat._consumeOptimisticMessage(message));
     // WhatsApp keeps the native album id on every photo. Build that exact
     // server group before it touches the DOM: inserting the children and
     // replacing them with a grid one frame later visibly shakes the chat.
     // Documents sent as one user-selected batch have distinct native IDs on
     // some providers.  Recover their exact persisted operation before the
     // generic provider album logic so reopening a chat keeps one file card.
-    messages = this.chat._collapseLocalOutgoingDocumentBatches(messages);
+    messages = this.chat._collapseLocalOutgoingDocumentBatches(displayMessages);
     messages = this.chat._collapseWhatsAppPhotoAlbums(messages);
     const frag = document.createDocumentFragment();
     let addedCount = 0;
     messages.forEach(m => {
       if (this.chat._upsertIncomingNativeAlbum(m, frag)) { addedCount++; return; }
-      if (this.chat._consumeOptimisticMessage(m)) {
-        return;
-      }
       const el = this.chat.renderMessage(m);
       if (el) {
         const albumIds = Array.isArray(m._albumMessageIds) ? m._albumMessageIds : [];

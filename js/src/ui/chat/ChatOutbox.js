@@ -93,6 +93,11 @@ export class ChatOutbox {
 
   _consumeOptimisticMessage(realMessage) {
     if (!realMessage || String(realMessage.id || '').startsWith('optimistic_')) return false;
+    // A presentation aggregate has one canonical id but several provider
+    // children. It must be expanded by MessageRenderer before this method is
+    // called; storing the aggregate under its canonical id corrupts the exact
+    // id -> snapshot mapping used to finish a document batch.
+    if (Array.isArray(realMessage._albumMessages) && realMessage._albumMessages.length > 1) return false;
     if (realMessage.direction !== 'out') return false;
     if (!this.chat.messagesContainer) return false;
 
@@ -104,8 +109,13 @@ export class ChatOutbox {
       this.chat._batchOptimisticByMessageId.set(realId, batchEl);
       this.chat.renderedMessageIds.add(realId);
       batchEl._batchMessages ??= new Map();
-      batchEl._batchMessages.set(realId, realMessage);
       this.chat._markBatchReceipt(batchEl, realId, this.chat._isReceiptRead(realMessage), Number(realMessage.ack ?? 0));
+      // A realtime receipt may contain only an id/status. It is evidence that
+      // Telegram accepted a message, but it is not a usable snapshot of the
+      // document. Keep waiting for history/realtime with the attachment so a
+      // completed visual card never loses or duplicates files.
+      if (!this._hasBatchAttachmentSnapshot(realMessage)) return true;
+      batchEl._batchMessages.set(realId, realMessage);
       this.chat._completeBatchReconciliation(batchEl);
       return true;
     }
@@ -144,6 +154,10 @@ export class ChatOutbox {
   _batchExpectedIds(element) {
     return String(element?.dataset?.expectedMessageIds || '')
       .split(',').map(id => id.trim()).filter(Boolean);
+  }
+
+  _hasBatchAttachmentSnapshot(message) {
+    return Array.isArray(message?.attachments) && message.attachments.length > 0;
   }
 
   _registerBatchExpectedId(element, messageId, total) {
@@ -212,16 +226,16 @@ export class ChatOutbox {
     for (const message of this.chat._takeHeldBatchIncoming(expected)) {
       const id = String(message.id || '');
       if (!id) continue;
-      element._batchMessages.set(id, message);
       this.chat.renderedMessageIds.add(id);
       this.chat._markBatchReceipt(element, id, this.chat._isReceiptRead(message), Number(message.ack || 0));
+      if (this._hasBatchAttachmentSnapshot(message)) element._batchMessages.set(id, message);
     }
     // Webhooks may beat the job response. Absorb those exact native records,
     // including already grouped ones, while preserving unrelated neighbours.
     for (const node of [...this.chat.messagesContainer.querySelectorAll('.message')]) {
       if (node === element) continue;
       const records = node._groupMessages || (node._originalData ? [node._originalData] : []);
-      const matched = records.filter(message => expected.has(String(message.id)));
+      const matched = records.filter(message => expected.has(String(message.id)) && this._hasBatchAttachmentSnapshot(message));
       if (!matched.length) continue;
       matched.forEach(message => element._batchMessages.set(String(message.id), message));
       const remaining = records.filter(message => !expected.has(String(message.id)));
@@ -262,6 +276,7 @@ export class ChatOutbox {
     // Build the same aggregate that history uses, atomically, from the exact
     // IDs confirmed for this request.  Do not infer a batch from timestamps.
     const members = ids.map(id => element._batchMessages.get(id));
+    if (members.some(message => !this._hasBatchAttachmentSnapshot(message))) return;
     const last = members[members.length - 1];
     const combined = {
       ...last,

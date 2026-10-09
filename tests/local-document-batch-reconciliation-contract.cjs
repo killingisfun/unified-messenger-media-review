@@ -60,4 +60,33 @@ assert.match(observed.dataset.groupKey, /^gid:tg-local-batch:out_files_12345678$
 assert.deepEqual([...chat.renderedMessageIds].sort(), ids, 'all native IDs remain handled after replacement');
 assert.equal(chat._batchOptimisticByMessageId.size, 0, 'no stale optimistic/native mapping survives');
 
+// A receipt-only realtime event proves that an id exists, but it has no
+// attachment payload. It must not complete a document batch with a blank
+// child while the authoritative history snapshot is still on its way.
+const receiptOnlyElement = {
+  isConnected: true,
+  dataset: { batchTotal: '3', expectedMessageIds: ids.join(',') },
+  _batchMessages: new Map(),
+  querySelector() { return null; },
+};
+const receiptOnlyChat = {
+  ...chat,
+  messagesContainer: {
+    querySelectorAll(selector) {
+      return selector === '.message.out[data-expected-message-ids]' ? [receiptOnlyElement] : [];
+    },
+  },
+  renderedMessageIds: new Set(),
+  _batchOptimisticByMessageId: new Map(),
+  _isReceiptRead: () => false,
+  _markBatchReceipt: () => {},
+};
+const receiptOnlyOutbox = new ChatOutbox(receiptOnlyChat);
+let completionCalls = 0;
+receiptOnlyOutbox._completeBatchReconciliation = () => { completionCalls++; };
+assert.equal(receiptOnlyOutbox._consumeOptimisticMessage({ id: '101', direction: 'out', ack: 1, attachments: [] }), true,
+  'an exact receipt-only event is consumed without creating a second bubble');
+assert.equal(receiptOnlyElement._batchMessages.size, 0, 'receipt-only event is not stored as an attachment snapshot');
+assert.equal(completionCalls, 0, 'receipt-only event cannot finish the visual document batch');
+
 console.log('local-document-batch-reconciliation-contract-ok');
