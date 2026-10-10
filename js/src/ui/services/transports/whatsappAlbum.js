@@ -3,6 +3,8 @@
  * BaseChat. The shared renderer only receives a group id plus the fact that
  * a record is a technical parent or a displayable image member.
  */
+import { isDocumentAttachment } from '../../../domain/providers.js';
+
 function rawGroupId(message = {}) {
   return String(message.groupId ?? message.media_group_id ?? message.group_id ?? '').trim();
 }
@@ -10,9 +12,8 @@ function rawGroupId(message = {}) {
 function isPhotoAttachment(attachment = {}) {
   const type = String(attachment.type || '').toLowerCase();
   const kind = String(attachment.kind || '').toLowerCase();
-  const sourceType = String(attachment.source_type || '').toLowerCase();
   const mime = String(attachment.mime || '').toLowerCase();
-  return sourceType !== 'document' && !['file', 'document'].includes(type)
+  return !isDocumentAttachment(attachment)
     && (type === 'photo' || type === 'image' || kind === 'photo' || kind === 'image' || mime.startsWith('image/'));
 }
 

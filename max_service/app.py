@@ -950,6 +950,9 @@ class MaxAuthService:
         if index < 0 or index > 99:
             return {"success": False, "code": "max_media_ref_invalid", "message": "Некорректное вложение MAX."}
         if str(serialize_profile(self.connected_client()).get("id", "")) != account_id:
+            # A chat/message pair belongs to the history snapshot of one MAX
+            # account. Do not renew it against another selected account even
+            # if provider IDs happen to overlap.
             return {"success": False, "code": "max_media_ref_account_changed", "message": "Аккаунт MAX изменился. Обновите чат."}
 
         async def locate(client: WebClient) -> Any:
@@ -973,10 +976,10 @@ class MaxAuthService:
         self.persist_media_tokens()
         return {"success": True, "media_ref": token}
 
-    async def send_attachment(self, chat_id: int, name: str, mime: str, raw: bytes, caption: str, reply_to: int | None) -> dict[str, Any]:
-        return await self.send_attachments(chat_id, [(name, mime, raw)], caption, reply_to)
+    async def send_attachment(self, chat_id: int, name: str, mime: str, raw: bytes, caption: str, reply_to: int | None, send_as_file: bool = False) -> dict[str, Any]:
+        return await self.send_attachments(chat_id, [(name, mime, raw)], caption, reply_to, send_as_file)
 
-    async def send_attachments(self, chat_id: int, files: list[tuple[str, str, bytes]], caption: str, reply_to: int | None) -> dict[str, Any]:
+    async def send_attachments(self, chat_id: int, files: list[tuple[str, str, bytes]], caption: str, reply_to: int | None, send_as_file: bool = False) -> dict[str, Any]:
         client, chat = await self.writable_chat(chat_id)
         if chat is None:
             return {"success": False, "outcome": "rejected", "code": "max_chat_unavailable", "message": "Этот чат MAX недоступен подключённому аккаунту."}
@@ -987,9 +990,9 @@ class MaxAuthService:
             suffix = Path(name).suffix.lower()
             if not name or len(name) > 160 or not raw or len(raw) > MAX_TRAINING_ATTACHMENT_BYTES:
                 return {"success": False, "outcome": "rejected", "code": "max_attachment_invalid", "message": "Файл MAX имеет неверный размер или имя."}
-            if len(files) > 1 and (suffix not in MAX_TRAINING_PHOTO_EXTENSIONS or not mime.startswith("image/")):
+            if len(files) > 1 and (send_as_file or suffix not in MAX_TRAINING_PHOTO_EXTENSIONS or not mime.startswith("image/")):
                 return {"success": False, "outcome": "rejected", "code": "max_album_photo_only", "message": "MAX разрешает пачкой только фотографии; документы отправляются по одному."}
-            attachments.append(Photo(raw=raw, name=name) if suffix in MAX_TRAINING_PHOTO_EXTENSIONS and mime.startswith("image/") else File(raw=raw, name=name))
+            attachments.append(Photo(raw=raw, name=name) if not send_as_file and suffix in MAX_TRAINING_PHOTO_EXTENSIONS and mime.startswith("image/") else File(raw=raw, name=name))
         if reply_to is not None:
             original = await client.get_message(chat_id, reply_to)
             if original is None or getattr(original, "chat_id", None) is None or int(getattr(original, "chat_id")) != chat_id:
@@ -1018,7 +1021,7 @@ class MaxAuthService:
 
     async def message_reactions(self, chat_id: int, message_id: int) -> dict[str, Any]:
         """Read one reaction snapshot from a chat available to this account."""
-        client, chat = await self.writable_chat(chat_id)
+        _, chat = await self.writable_chat(chat_id)
         if chat is None:
             return {"success": False, "code": "max_chat_unavailable", "message": "Этот чат MAX недоступен подключённому аккаунту."}
         try:
@@ -1852,7 +1855,7 @@ async def message_attachment(request: web.Request) -> web.Response:
                 if len(data) > MAX_TRAINING_ATTACHMENT_BYTES or total_bytes > MAX_TRAINING_BATCH_BYTES:
                     return json_response({"success": False, "outcome": "rejected", "code": "max_attachment_too_large", "message": "Файл MAX превышает 10 МБ."}, 413)
             files.append((file_name, file_mime, bytes(data)))
-        elif part.name in {"chat_id", "caption", "reply_to"}:
+        elif part.name in {"chat_id", "caption", "reply_to", "send_as_file"}:
             fields[part.name] = (await part.text()).strip()
     chat_id = max_chat_id(fields.get("chat_id"))
     if chat_id is None: return json_response({"success": False, "outcome": "rejected", "code": "max_invalid_chat", "message": "Некорректный чат MAX."}, 422)
@@ -1860,7 +1863,8 @@ async def message_attachment(request: web.Request) -> web.Response:
     if fields.get("reply_to") and reply_to is None: return json_response({"success": False, "outcome": "rejected", "code": "max_reply_target_invalid", "message": "Некорректная цитата MAX."}, 422)
     if len(files) < 1 or len(files) > MAX_TRAINING_BATCH_FILES:
         return json_response({"success": False, "outcome": "rejected", "code": "max_attachment_batch_invalid", "message": "MAX принимает от одного до десяти файлов за раз."}, 422)
-    return json_response(await request.app["service"].send_attachments(chat_id, files, fields.get("caption", ""), reply_to))
+    send_as_file = fields.get("send_as_file") == "1"
+    return json_response(await request.app["service"].send_attachments(chat_id, files, fields.get("caption", ""), reply_to, send_as_file))
 
 
 async def message_reactions(request: web.Request) -> web.Response:

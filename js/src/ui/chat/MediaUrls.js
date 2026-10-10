@@ -1,4 +1,5 @@
 import { motionKind } from '../MotionMedia.js?v=20261007-max-sticker-fallback-r1';
+import { isDocumentAttachment } from '../../domain/providers.js';
 
 /** Attachment URL selection, relay normalization and media metadata probes. */
 export class MediaUrls {
@@ -60,12 +61,7 @@ export class MediaUrls {
   }
 
   _isDocumentAttachment(attachment) {
-    if (!attachment) return false;
-    const type = String(attachment.type || '').toLowerCase();
-    const kind = String(attachment.kind || attachment.media_kind || attachment.media_group_kind || '').toLowerCase();
-    return String(attachment.source_type || '').toLowerCase() === 'document'
-      || ['file', 'document'].includes(type)
-      || ['file', 'document'].includes(kind);
+    return isDocumentAttachment(attachment);
   }
 
   async resolveMediaSrc(a) {

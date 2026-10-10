@@ -92,19 +92,20 @@ const existingGroup = {
 };
 const refreshChat = {
   messagesContainer: { querySelectorAll: () => [existingGroup] },
+  _isDocumentAttachment: attachment => attachment?.type === 'document' || attachment?.source_type === 'document',
   renderedMessageIds: new Set(['101', '102', '103']),
   _msgIdToGroupKey: new Map([['101', 'gid:tg-native-docs-1']]),
   _groupKeyToEl: new Map([['gid:tg-native-docs-1', existingGroup]]),
 };
 const refreshRenderer = new MessageRenderer(refreshChat);
 const refresh = refreshRenderer._prepareRenderedDocumentGroupRefresh({
-  media_group_id: 'tg-native-docs-1', _albumMessageIds: ['101', '102'],
+  media_group_id: 'tg-native-docs-1', _albumMessageIds: ['101', '102'], _albumMessages: [child('101'), child('102')],
 });
 assert.equal(removed, false, 'old card remains visible while the replacement is only being prepared');
 refresh.restore();
 assert.deepEqual([...refreshChat.renderedMessageIds].sort(), ['101', '102', '103'], 'a failed replacement restores every existing component id');
 const commit = refreshRenderer._prepareRenderedDocumentGroupRefresh({
-  media_group_id: 'tg-native-docs-1', _albumMessageIds: ['101', '102', '103'],
+  media_group_id: 'tg-native-docs-1', _albumMessageIds: ['101', '102', '103'], _albumMessages: [child('101'), child('102'), child('103')],
 });
 commit.commit();
 assert.equal(removed, true, 'old group is removed only when caller has built the replacement');

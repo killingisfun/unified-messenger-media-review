@@ -72,6 +72,16 @@ export function getProvider(source) {
   };
 }
 
+/** One provider-neutral document predicate for albums, previews and rendering. */
+export function isDocumentAttachment(attachment = {}) {
+  const type = String(attachment?.type || '').toLowerCase();
+  const kind = String(attachment?.kind || attachment?.media_kind || attachment?.media_group_kind || '').toLowerCase();
+  const sourceType = String(attachment?.source_type || '').toLowerCase();
+  return sourceType === 'document'
+    || ['file', 'document'].includes(type)
+    || ['file', 'document'].includes(kind);
+}
+
 function featureDefinition(source, feature, capabilityOverrides = null) {
   const provider = getProvider(source);
   const override = capabilityOverrides?.[feature];

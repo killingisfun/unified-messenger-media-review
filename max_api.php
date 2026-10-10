@@ -63,6 +63,7 @@ if ($method === 'POST' && in_array((string)($_POST['resource'] ?? ''), ['attachm
     $curl = curl_init(MAX_API_SIDECAR_BASE . ($batch ? '/v1/messages/attachments' : '/v1/messages/attachment'));
     if ($curl === false) max_api_json(['success' => false, 'message' => 'Служба MAX недоступна.'], 502);
     $payload = ['chat_id' => $chatId, 'caption' => (string)($_POST['caption'] ?? '')];
+    if ((string)($_POST['send_as_file'] ?? '') === '1') $payload['send_as_file'] = '1';
     foreach ($normalised as $index => $file) $payload[$batch ? "files[{$index}]" : 'file'] = new CURLFile((string)$file['tmp_name'], (string)($file['type'] ?? 'application/octet-stream'), basename((string)$file['name']));
     if (is_string($replyTo) && $replyTo !== '') $payload['reply_to'] = $replyTo;
     curl_setopt_array($curl, [CURLOPT_POST => true, CURLOPT_POSTFIELDS => $payload, CURLOPT_RETURNTRANSFER => true, CURLOPT_CONNECTTIMEOUT => 3, CURLOPT_TIMEOUT => 60, CURLOPT_HTTPHEADER => ['Accept: application/json']]);

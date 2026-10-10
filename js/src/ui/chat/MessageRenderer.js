@@ -772,6 +772,14 @@ export class MessageRenderer {
     const ids = new Set((Array.isArray(message?._albumMessageIds) ? message._albumMessageIds : [])
       .map(id => String(id || '').trim()).filter(Boolean));
     if (ids.size < 2 || !this.chat.messagesContainer) return null;
+    const members = Array.isArray(message?._albumMessages) && message._albumMessages.length
+      ? message._albumMessages
+      : [message];
+    // This path is exclusively for document groups. Incoming WhatsApp photo
+    // albums have their own incremental upsert that merges an existing card
+    // with later children; never remove that card from a partial photo page.
+    if (!members.every(member => Array.isArray(member?.attachments)
+      && member.attachments.some(attachment => this.chat._isDocumentAttachment(attachment)))) return null;
     const groupKey = `gid:${String(message?.media_group_id || message?.group_id || message?.groupId || '')}`;
     const nodes = [];
     const knownIds = new Set(ids);

@@ -53,6 +53,17 @@ uses a time window for outgoing documents.
    are first merged from the registry, current page and old DOM card; the old
    card is removed only after a new aggregate DOM node has been constructed.
    An omitted member of a partial page is never interpreted as deletion.
+9. The generic replacement path is now restricted to explicit document
+   groups. Incoming WhatsApp photo albums stay with their existing native
+   upsert, so a partial `[B, C]` update cannot remove an existing `[A, B, C]`
+   card. The same shared document predicate is used by renderer, media helper
+   and WhatsApp album transport; `kind: document` with image MIME is excluded
+   from photo albums.
+10. This review branch now includes the current MAX adapter, relay and sidecar
+    sources. `attachment_as_file` is propagated as `send_as_file` to the
+    sidecar; JPG/PNG select `File` rather than `Photo`. MAX deliberately
+    sends multiple documents sequentially because its native batch endpoint
+    permits photo albums only.
 
 The native flow has not been exercised against a production chat in this
 package. Do not assume it is verified merely because focused contracts pass.
@@ -95,5 +106,9 @@ Please trace the live ordering and module loading end-to-end:
   classifier with JPG, PNG, video, sticker and animation fixtures, and checks
   that the three read routes use it and retain `source_type` through the
   adapter.
+- `tests/attachment-classification-contract.cjs` checks agreement between the
+  shared document predicate and the WhatsApp album transport.
+- `tests/max-attachment-send-contract.py` checks both JPG and PNG forced to
+  `File` through the current MAX sidecar method.
 
 They establish intended local invariants, not proof of the full WebView flow.

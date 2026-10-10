@@ -35,13 +35,21 @@ def load_send_attachments():
     service = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "MaxAuthService")
     method = next(node for node in service.body if isinstance(node, ast.AsyncFunctionDef) and node.name == "send_attachments")
     namespace = {
-        "asyncio": asyncio, "ApiError": ApiError, "UploadError": UploadError,
-        "File": File, "Photo": Photo, "Path": Path,
-        "MAX_TRAINING_BATCH_FILES": 10, "MAX_TRAINING_BATCH_BYTES": 20 * 1024 * 1024,
+        "asyncio": asyncio,
+        "ApiError": ApiError,
+        "UploadError": UploadError,
+        "File": File,
+        "Photo": Photo,
+        "Path": Path,
+        "MAX_TRAINING_BATCH_FILES": 10,
+        "MAX_TRAINING_BATCH_BYTES": 20 * 1024 * 1024,
         "MAX_TRAINING_ATTACHMENT_BYTES": 10 * 1024 * 1024,
         "MAX_TRAINING_PHOTO_EXTENSIONS": frozenset({".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}),
-        "MAX_READ_TIMEOUT_SECONDS": 12, "serialize_profile": lambda _client: {"id": "7"},
-        "TimeoutError": TimeoutError, "ConnectionError": ConnectionError, "OSError": OSError,
+        "MAX_READ_TIMEOUT_SECONDS": 12,
+        "serialize_profile": lambda _client: {"id": "7"},
+        "TimeoutError": TimeoutError,
+        "ConnectionError": ConnectionError,
+        "OSError": OSError,
         "LOG": SimpleNamespace(exception=lambda *_args, **_kwargs: None),
     }
     exec(compile(ast.fix_missing_locations(ast.Module(body=[method], type_ignores=[])), str(SOURCE), "exec"), namespace)
@@ -81,19 +89,38 @@ class MaxAttachmentSendContract(unittest.TestCase):
     def test_send_uses_the_validated_client_without_a_reply(self) -> None:
         async def check() -> None:
             client = FakeClient()
-            result = await load_send_attachments()(FakeService(client), 42, [("note.txt", "text/plain", b"fixture")], "", None)
+            service = FakeService(client)
+            result = await load_send_attachments()(service, 42, [("note.txt", "text/plain", b"fixture")], "", None)
             self.assertEqual(result["outcome"], "accepted")
             self.assertEqual(result["message_id"], "901")
             self.assertEqual(len(client.sent), 1)
+
         asyncio.run(check())
 
     def test_send_checks_a_reply_with_the_same_validated_client(self) -> None:
         async def check() -> None:
             client = FakeClient()
-            result = await load_send_attachments()(FakeService(client), 42, [("note.txt", "text/plain", b"fixture")], "caption", 77)
+            service = FakeService(client)
+            result = await load_send_attachments()(service, 42, [("note.txt", "text/plain", b"fixture")], "caption", 77)
             self.assertEqual(result["outcome"], "accepted")
             self.assertEqual(client.reply_queries, [(42, 77)])
             self.assertEqual(client.sent[0]["reply_to"], 77)
+
+        asyncio.run(check())
+
+    def test_jpeg_and_png_can_be_forced_to_documents(self) -> None:
+        async def check() -> None:
+            client = FakeClient()
+            service = FakeService(client)
+            result = await load_send_attachments()(service, 42, [("image.jpg", "image/jpeg", b"fixture")], "", None, True)
+            self.assertEqual(result["outcome"], "accepted")
+            self.assertIsInstance(client.sent[0]["attachments"][0], File)
+            self.assertNotIsInstance(client.sent[0]["attachments"][0], Photo)
+            result = await load_send_attachments()(service, 42, [("image.png", "image/png", b"fixture")], "", None, True)
+            self.assertEqual(result["outcome"], "accepted")
+            self.assertIsInstance(client.sent[1]["attachments"][0], File)
+            self.assertNotIsInstance(client.sent[1]["attachments"][0], Photo)
+
         asyncio.run(check())
 
 
