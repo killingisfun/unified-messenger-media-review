@@ -2034,8 +2034,11 @@ class TelegramClient implements MessagingClientInterface
                 'animated' => !empty($attachment['animated']),
                 'video_note' => !empty($attachment['video_note']),
                 'animation_format' => (string)($attachment['animation_format'] ?? ''),
+                'width' => max(0, (int)($attachment['width'] ?? 0)) ?: null,
+                'height' => max(0, (int)($attachment['height'] ?? 0)) ?: null,
+                'duration' => max(0, (int)($attachment['duration'] ?? 0)) ?: null,
                 'title' => $title, 'filename' => $title,
-                'thumbnail' => $preview, 'preview' => $preview,
+                'thumbnail' => $preview, 'preview' => $preview, 'preview_url' => $preview,
             ];
         }
         return $result;

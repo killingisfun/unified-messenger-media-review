@@ -1,0 +1,47 @@
+# Telegram video presentation update
+
+This review update covers the recently reported desktop/WebView video path:
+an outgoing Telegram video could first render as a black player, use the wrong
+aspect ratio, and leave an extra optimistic bubble while the confirmed message
+arrived. The package contains source and deterministic contracts only; it does
+not contain a Telegram session, device credentials, customer media, logs, or
+production configuration.
+
+## Code included in this update
+
+- `telegram_service/rest.php` recognises a Telegram document with a
+  `documentAttributeVideo` as video even when its MIME metadata is incomplete,
+  and exposes width, height, duration, and a separate preview URL.
+- `src/Services/TelegramClient.php` preserves that normalized metadata when
+  converting the REST response into the shared message format.
+- `MessageRenderer.js`, `MediaLoader.js`, `ChatOutbox.js`, and
+  `chat-runtime.css` keep a local outgoing blob playable before confirmation,
+  prefer an image poster over video bytes, apply provider dimensions before
+  network loading, and avoid a fixed thumbnail geometry.
+- `tests/telegram-video-presentation-contract.cjs` and the extended
+  `tests/telegram-document-read-contract.php` cover the server and UI
+  normalization boundaries without talking to Telegram.
+
+## Review questions
+
+1. Is the attachment contract sufficiently explicit to distinguish a video
+   document, an ordinary document, a photo, and a browser-unsupported video?
+2. Can a delayed history/realtime confirmation still cause the optimistic
+   outgoing video and confirmed server message to coexist? In particular,
+   assess the native-ID reconciliation path shared with other attachment types.
+3. Are poster selection, fallback download behavior, and dimensions safe for
+   absent thumbnails, malformed MIME values, portrait video, and square video?
+4. Does any provider-specific adapter bypass the shared attachment fields and
+   reintroduce a black `<video>` element or an incorrect media classification?
+
+## Reproduce only with fixtures
+
+Run the two contracts independently:
+
+```powershell
+node tests/telegram-video-presentation-contract.cjs
+php tests/telegram-document-read-contract.php
+```
+
+Do not use this public snapshot to send messages or access a production
+account. A successful provider HTTP response is not a delivery confirmation.

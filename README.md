@@ -10,6 +10,7 @@ Start with the review packet matching the area you inspect:
 
 - [Shared UI and MAX/server review](docs/expert-ui-max-server-review.md)
 - [Telegram streaming-media review](docs/expert-telegram-media-review.md)
+- [Telegram video presentation update](docs/expert-telegram-video-presentation.md)
 
 Please do not run, deploy or modify production from this snapshot. Return
 findings as a written recommendation or a small diff against these files.

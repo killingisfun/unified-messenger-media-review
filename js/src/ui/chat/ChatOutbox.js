@@ -934,6 +934,15 @@ export class ChatOutbox {
       element.querySelectorAll?.('img[data-lazy-src]').forEach((image) => {
         if (String(image.dataset.lazySrc || '').startsWith('blob:')) this.chat._activateLazyMedia(image);
       });
+      // Local video previews are browser-owned Blob URLs. Activate them
+      // immediately instead of waiting for the remote Telegram lazy queue;
+      // otherwise the optimistic bubble contains only the black fallback
+      // poster until the user clicks it after the send has completed.
+      element.querySelectorAll?.('video[data-lazy="1"] source[data-lazy-src]').forEach((source) => {
+        if (String(source.dataset.lazySrc || '').startsWith('blob:')) {
+          this.chat._activateLazyMedia(source.closest('video'));
+        }
+      });
       this.chat.scrollToBottom();
       element.dataset.sendRequestId = requestId;
       this.chat._rememberOutgoingOperation({ requestId, status: 'queued', element, text, files });

@@ -11,7 +11,7 @@
               /* Unified video frame: provider dimensions must never resize the
                  message column. The native controls stay inside this frame. */
               .media-holder.video-holder{display:block;width:min(420px,100%);max-width:100%;}
-              .video-player{position:relative;width:100%;max-width:100%;height:clamp(180px,28vw,320px);aspect-ratio:16/9;overflow:hidden;border-radius:10px;background:#101418;display:flex;align-items:center;justify-content:center;}
+              .video-player{position:relative;width:100%;max-width:100%;height:auto;min-height:0;aspect-ratio:16/9;overflow:hidden;border-radius:10px;background:#101418;display:flex;align-items:center;justify-content:center;}
               .video-player video.msg-video{display:block;width:100%;height:100%;max-width:100%;max-height:100%;object-fit:contain;background:#101418;border:0;border-radius:0;}
               .media-holder.video-holder.video-note{width:min(280px,100%);}
               .video-holder.video-note .video-player{height:auto;aspect-ratio:1;border-radius:50%;}
@@ -27,7 +27,7 @@
 .vk-provider-video-title+.vk-provider-video-duration{bottom:38px;}
 .media-provider-note{display:flex;align-items:flex-start;gap:6px;max-width:420px;margin:7px 2px 1px;color:var(--ui-muted,#657583);font:12px/1.35 system-ui;}
 .media-provider-note i{margin-top:1px;color:#768797;}
-              @media (max-width:600px){.media-holder.video-holder{width:min(100%,420px)}.video-player{height:clamp(160px,52vw,280px);}}
+              @media (max-width:600px){.media-holder.video-holder{width:min(100%,420px)}}
               .media-holder.loading .bc-spin{
                 position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
                 width:28px;height:28px;border:3px solid rgba(0,0,0,.15);

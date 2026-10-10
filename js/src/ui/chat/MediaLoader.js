@@ -979,6 +979,12 @@ export class MediaLoader {
       if (!target || seen.has(target)) return;
       seen.add(target);
       this.chat._prepareLazyImageLayout(target);
+      if (target.tagName === 'VIDEO') {
+        // Telegram supplies dimensions in documentAttributeVideo. Apply them
+        // before the first network byte so portrait/square clips do not flash
+        // in a false 16:9 frame and keep the same geometry after lazy load.
+        this.chat._applyVideoDimensions(target, target.dataset.videoWidth, target.dataset.videoHeight);
+      }
       const isDeferredVideo = target.tagName === 'VIDEO' && target.dataset.deferVideo === '1';
       if (!isDeferredVideo) {
         try { this.chat._attachMediaSpinner(target); } catch {}

@@ -490,19 +490,45 @@ export class MessageRenderer {
           const downloadUrl = this.chat._withDlParam(this.chat._withNameParam(att.download || lbHref, niceName));
           return `<div class="${videoHolderClass}"><div class="video-player" data-media-state="error"><div class="media-error" role="status"><span>${att.unavailable_label || `${videoLabel} недоступно`}</span></div></div><div class="media-actions"><a class="media-download" href="${downloadUrl}" download="${niceName}"><i class="bi bi-download" aria-hidden="true"></i><span>Попробовать скачать</span></a></div></div>`;
         }
+        // Telegram can mark AVI/MKV and other containers as a video document,
+        // while Chromium has no decoder for that declared MIME type. Do not
+        // present a permanently black native player in that case: retain the
+        // attachment as a truthful downloadable video card. MP4/WebM/MOV
+        // keep the player whenever this WebView advertises support.
+        let browserCanPlay = true;
+        try {
+          const probe = document.createElement('video');
+          browserCanPlay = Boolean(probe.canPlayType?.(safeVideoMime));
+        } catch {}
+        if (!browserCanPlay) {
+          const safeDownload = this.chat._escapeHtml(this.chat._withDlParam(lbHref));
+          return `<div class="${videoHolderClass} video-format-unsupported"><div class="video-player" data-media-state="error"><div class="media-error" role="status"><span>Формат видео не поддерживается встроенным проигрывателем</span></div></div><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать видео</span></a></div></div>`;
+        }
         // Every provider shares this stream boundary. A real thumbnail is
         // preferred, but a generated static play surface keeps a video with
         // no provider preview from probing MP4 bytes during scrolling.
-        const poster = att.preview || att.thumbnail || this.chat._videoPoster;
-        const posterAttr = ` data-lazy-poster="${this.chat._escapeHtml(poster)}"`;
-        const deferredAttr = ' data-defer-video="1"';
+        const posterCandidate = att.poster || att.preview_url || att.preview || att.thumbnail || '';
+        const poster = this.chat._safeRemoteUrl(posterCandidate)
+          || (String(displayUrl || openUrl || '').startsWith('blob:') ? '' : this.chat._videoPoster);
+        const posterAttr = poster ? ` data-lazy-poster="${this.chat._escapeHtml(poster)}"` : '';
+        // A local optimistic video is already a browser-owned Blob URL. It
+        // must be attached immediately so the sender sees its first frame;
+        // deferring it with the remote-media policy produced a permanent
+        // black tile until a second click after the upload completed.
+        const localVideo = String(displayUrl || openUrl || '').startsWith('blob:');
+        const deferredAttr = localVideo ? '' : ' data-defer-video="1"';
         // The source remains only in data-lazy-src until explicit Play.
         // This lets Chromium request normal byte ranges after activation,
         // without opening a full media response for timeline rendering.
-        const preload = 'none';
+        const preload = localVideo ? 'auto' : 'none';
         const src = this.chat._escapeHtml(displayUrl || '');
         const safeDownload = this.chat._escapeHtml(this.chat._withDlParam(lbHref));
-        return `<div class="${videoHolderClass}"${mediaRefreshAttr}><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr} aria-label="${this.chat._escapeHtml(`${videoLabel} ${filename}`)}" data-lazy="1" data-fallback-label="${safeFilename}" data-download-url="${safeDownload}"><source data-lazy-src="${src}" type="${safeVideoMime}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
+        const width = Number(att.width ?? att.w);
+        const height = Number(att.height ?? att.h);
+        const dimensionAttr = Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
+          ? ` data-video-width="${Math.min(100000, Math.floor(width))}" data-video-height="${Math.min(100000, Math.floor(height))}"`
+          : '';
+        return `<div class="${videoHolderClass}"${mediaRefreshAttr}><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr}${dimensionAttr} aria-label="${this.chat._escapeHtml(`${videoLabel} ${filename}`)}" data-lazy="1" data-fallback-label="${safeFilename}" data-download-url="${safeDownload}"><source data-lazy-src="${src}" type="${safeVideoMime}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
       }
       if (attachmentType === 'audio') {
         const src = this.chat._escapeHtml(displayUrl || '');

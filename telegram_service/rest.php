@@ -580,20 +580,41 @@ if (!empty($rxAgg)) {
 function tg_document_message_type(array $document): string
 {
     $mime = strtolower((string)($document['mime_type'] ?? ''));
-    $sticker = $animated = $round = false;
+    $sticker = $animated = $round = $video = false;
     foreach (($document['attributes'] ?? []) as $attribute) {
         if (!is_array($attribute)) continue;
         $attributeType = (string)($attribute['_'] ?? '');
         $sticker = $sticker || $attributeType === 'documentAttributeSticker';
         $animated = $animated || $attributeType === 'documentAttributeAnimated';
+        $video = $video || $attributeType === 'documentAttributeVideo';
         $round = $round || ($attributeType === 'documentAttributeVideo' && !empty($attribute['round_message']));
     }
     if ($sticker) return 'sticker';
     if ($round) return 'video_note';
     if ($animated) return 'animation';
-    if (str_starts_with($mime, 'video/')) return 'video';
+    // Telegram can omit/normalize mime_type on a document while retaining
+    // documentAttributeVideo. The attribute is the authoritative media kind;
+    // relying on MIME alone made valid MP4/MOV/WebM records render as files.
+    if ($video || str_starts_with($mime, 'video/')) return 'video';
     if (str_starts_with($mime, 'audio/')) return 'audio';
     return 'document';
+}
+
+/** Return dimensions/duration carried by documentAttributeVideo. */
+function tg_document_video_meta(array $document): array
+{
+    foreach (($document['attributes'] ?? []) as $attribute) {
+        if (!is_array($attribute) || ($attribute['_'] ?? '') !== 'documentAttributeVideo') continue;
+        $width = max(0, (int)($attribute['w'] ?? $attribute['width'] ?? 0));
+        $height = max(0, (int)($attribute['h'] ?? $attribute['height'] ?? 0));
+        $duration = max(0, (int)($attribute['duration'] ?? 0));
+        return [
+            'width' => $width ?: null,
+            'height' => $height ?: null,
+            'duration' => $duration ?: null,
+        ];
+    }
+    return ['width' => null, 'height' => null, 'duration' => null];
 }
 
 function tg_guess_kind_and_meta(array $m): array
@@ -801,6 +822,8 @@ function tg_build_attachments(array $m, string $baseUrl, $chatId): array
         ]];
     }
     [$kind, $mime, $filename, $title] = tg_guess_kind_and_meta($m);
+    $document = is_array($m['media']['document'] ?? null) ? $m['media']['document'] : [];
+    $videoMeta = $kind === 'video' ? tg_document_video_meta($document) : [];
 
     // ==========================================================
     // ===== THE FIX IS HERE =====
@@ -837,6 +860,10 @@ function tg_build_attachments(array $m, string $baseUrl, $chatId): array
         'filename'   => $filename,
         'preview'    => $thumbUrlV,
         'thumbnail'  => $thumbUrlV,
+        'preview_url' => $thumbUrlV,
+        'width'      => $videoMeta['width'] ?? null,
+        'height'     => $videoMeta['height'] ?? null,
+        'duration'   => $videoMeta['duration'] ?? null,
         'ensure_url' => $ensureV,
         'public_url' => $publicV,
         // кладём явную версию – фронту пригодится

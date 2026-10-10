@@ -75,7 +75,7 @@ $uiExposeProviderConfig = !$uiPreview && !$uiBridgeMode;
     <link rel="stylesheet" href="js/src/ui/styles/message-actions.css?v=20260914-settings">
     <link rel="stylesheet" href="js/src/ui/styles/ai.css?v=20260924-audit-r14">
 
-    <link rel="stylesheet" href="js/src/ui/styles/chat-runtime.css?v=20261004-media-csp-r2">
+    <link rel="stylesheet" href="js/src/ui/styles/chat-runtime.css?v=20261010-video-contract-r1">
 
     <script>
         // Конфиг для WPPConnect и дефолтного аватара (как в твоём main.php)
