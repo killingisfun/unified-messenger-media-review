@@ -547,6 +547,8 @@ if (titleHost) {
   _isWhatsAppPhotoAlbumMember(...args) { return this.chatAlbums._isWhatsAppPhotoAlbumMember(...args); }
   _collapseWhatsAppPhotoAlbums(...args) { return this.chatAlbums._collapseWhatsAppPhotoAlbums(...args); }
   _collapseLocalOutgoingDocumentBatches(...args) { return this.chatAlbums._collapseLocalOutgoingDocumentBatches(...args); }
+  _rememberDocumentGroupMembers(...args) { return this.chatAlbums._rememberDocumentGroupMembers(...args); }
+  _seedRenderedDocumentGroups(...args) { return this.chatAlbums._seedRenderedDocumentGroups(...args); }
   _splitNewestHistoryPage(...args) { return this.chatHistory._splitNewestHistoryPage(...args); }
   _stashHistoryOverflow(...args) { return this.chatHistory._stashHistoryOverflow(...args); }
   _takeBufferedHistoryPage(...args) { return this.chatHistory._takeBufferedHistoryPage(...args); }

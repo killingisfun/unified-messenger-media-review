@@ -1077,22 +1077,29 @@ class TelegramClient implements MessagingClientInterface
         $payload = ['action' => 'sendMessage', 'chatId' => $chatId, 'message' => $message];
         $fileAction = 'sendFile';
         $filePrepared = !$hasFile;
+        $multipartFile = null;
 
         // Файл (несколько форматов входа)
         if ($hasFile) {
             try {
+                $sendAsFile = !empty($file['send_as_file']);
                 if (!empty($file['tmp_name']) && is_string($file['tmp_name']) && is_file($file['tmp_name']) && is_readable($file['tmp_name'])) {
                     $name = (string)($file['name'] ?? basename($file['tmp_name']));
-                    $bin  = file_get_contents($file['tmp_name']);
-                    if ($bin !== false) {
-                        $payload = [
-                            'action'  => $fileAction,
-                            'chatId'  => $chatId,
-                            'file'    => ['name' => $name, 'base64' => base64_encode($bin)],
-                            'caption' => $message,
-                        ];
-                        $filePrepared = true;
-                    }
+                    // Do not inflate browser uploads into JSON/base64. Apart
+                    // from the extra memory, PHP applies post_max_size before
+                    // the Telegram REST handler can decode the JSON payload.
+                    $payload = [
+                        'action'  => $fileAction,
+                        'chatId'  => $chatId,
+                        'caption' => $message,
+                    ];
+                    if ($sendAsFile) $payload['send_as_file'] = '1';
+                    $multipartFile = [
+                        'path' => (string)$file['tmp_name'],
+                        'name' => $name,
+                        'mime' => (string)($file['type'] ?? mime_content_type((string)$file['tmp_name']) ?: 'application/octet-stream'),
+                    ];
+                    $filePrepared = true;
                 } elseif (!empty($file['name']) && !empty($file['base64']) && is_string($file['base64'])) {
                     $payload = [
                         'action'  => $fileAction,
@@ -1153,6 +1160,12 @@ class TelegramClient implements MessagingClientInterface
             if (!$filePrepared) {
                 return SendResult::rejected('attachment_unreadable', 'Не удалось прочитать вложение для Telegram.');
             }
+            // Keep the document preference independent of how this caller
+            // supplied the file. Browser uploads use multipart, whereas
+            // durable jobs use filePath and older callers can use base64.
+            // All three arrive at Telegram REST through the same media
+            // choice, so none may silently lose this flag.
+            if ($sendAsFile) $payload['send_as_file'] = '1';
         }
 
         if ($replyToId !== null) {
@@ -1161,11 +1174,13 @@ class TelegramClient implements MessagingClientInterface
 
         $this->log('info', 'Sending message', [
             'chat_id' => $chatId,
-            'has_file' => isset($payload['file']) || isset($payload['filePath']),
+            'has_file' => $multipartFile !== null || isset($payload['file']) || isset($payload['filePath']),
             'is_reply' => $replyToId !== null,
         ]);
 
-        $json = $this->httpPost('/rest.php', $payload);
+        $json = $multipartFile !== null
+            ? $this->httpPostMultipart('/rest.php', $payload, $multipartFile, 120.0)
+            : $this->httpPost('/rest.php', $payload);
         if (!($json['success'] ?? false)) {
             $this->log('warning', 'sendMessage failed', [
                 'chat_id' => $chatId,
@@ -1192,7 +1207,7 @@ class TelegramClient implements MessagingClientInterface
      * accepted native id; a missing id is an unknown result, never success.
      * Files are read by the application worker and are never exposed as URLs.
      */
-    public function sendMediaAlbum(string $chatId, string $message, array $files, ?string $replyToMessageId = null, ?string $operationId = null): array
+    public function sendMediaAlbum(string $chatId, string $message, array $files, ?string $replyToMessageId = null, ?string $operationId = null, bool $sendAsFile = false): array
     {
         if (count($files) < 2 || count($files) > 10) {
             return SendResult::rejected('telegram_album_size_invalid', 'Альбом Telegram содержит от двух до десяти файлов.');
@@ -1237,6 +1252,7 @@ class TelegramClient implements MessagingClientInterface
             'caption' => $message,
             'files' => $payloadFiles,
         ];
+        if ($sendAsFile) $albumPayload['send_as_file'] = '1';
         if ($replyToId !== null) $albumPayload['reply_to_message_id'] = $replyToId;
         // A durable server job may name itself to the private Telegram REST
         // process. It is deliberately optional so ordinary adapter callers
@@ -1708,6 +1724,97 @@ class TelegramClient implements MessagingClientInterface
         }
     }
 
+    /**
+     * Send the browser-uploaded temporary file as a real multipart body.
+     * The response handling deliberately matches httpPost(): a 5xx or a lost
+     * response is an unknown provider outcome, never a confirmed rejection.
+     *
+     * @param array{path:string,name:string,mime:string} $file
+     */
+    private function httpPostMultipart(string $path, array $payload, array $file, ?float $timeout = null): array
+    {
+        $url = $this->baseUrl . $path;
+        $t0 = microtime(true);
+        $requestTimeout = $timeout === null ? 120.0 : max(10.0, min(300.0, $timeout));
+
+        try {
+            if ($this->guzzle) {
+                $parts = [];
+                foreach ($payload as $name => $value) {
+                    $parts[] = ['name' => (string)$name, 'contents' => (string)$value];
+                }
+                $stream = fopen($file['path'], 'rb');
+                if ($stream === false) {
+                    throw new \RuntimeException('Cannot open attachment for multipart upload');
+                }
+                try {
+                    /** @var \Psr\Http\Message\ResponseInterface $res */
+                    $res = $this->guzzle->post($url, [
+                        'headers' => ['Accept' => 'application/json'],
+                        'multipart' => array_merge($parts, [[
+                            'name' => 'file',
+                            'contents' => $stream,
+                            'filename' => $file['name'],
+                            'headers' => ['Content-Type' => $file['mime']],
+                        ]]),
+                        'timeout' => $requestTimeout,
+                        'connect_timeout' => min(5.0, $requestTimeout),
+                    ]);
+                    $code = $res->getStatusCode();
+                    $resp = (string)$res->getBody();
+                } finally {
+                    // Guzzle's multipart handler may already close the
+                    // resource once the request body is consumed. A second
+                    // fclose throws on PHP 8 and must not turn Telegram's
+                    // confirmed response into an "unknown" send outcome.
+                    if (is_resource($stream)) fclose($stream);
+                }
+            } else {
+                $postFields = $payload;
+                $postFields['file'] = new \CURLFile($file['path'], $file['mime'], $file['name']);
+                $ch = curl_init($url);
+                if ($ch === false) {
+                    throw new \RuntimeException('Cannot initialize cURL');
+                }
+                curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+                curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);
+                curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 5);
+                curl_setopt($ch, CURLOPT_TIMEOUT, (int)ceil($requestTimeout));
+                curl_setopt($ch, CURLOPT_POST, true);
+                curl_setopt($ch, CURLOPT_POSTFIELDS, $postFields);
+                curl_setopt($ch, CURLOPT_HTTPHEADER, ['Accept: application/json']);
+                $resp = curl_exec($ch);
+                if ($resp === false) {
+                    $error = curl_error($ch);
+                    curl_close($ch);
+                    throw new \RuntimeException('cURL error: ' . $error);
+                }
+                $code = (int)curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+                curl_close($ch);
+                $resp = (string)$resp;
+            }
+
+            $this->debugHttp('POST', $url, $code, (microtime(true) - $t0) * 1000, $resp, (string)($payload['action'] ?? ''));
+            $json = json_decode($resp, true);
+            if (!is_array($json)) {
+                $this->log('warning', 'Multipart POST returned non-JSON body', [
+                    'url' => $this->sanitizeUrl($url),
+                    'status' => $code,
+                    'sample' => $this->jsonSnippet($resp),
+                ]);
+                return ['success' => false, 'message' => 'Invalid JSON', '_transport_error' => true, '_http_status' => $code];
+            }
+            if ($code < 200 || $code >= 500) {
+                $json['_transport_error'] = true;
+            }
+            $json['_http_status'] = $code;
+            return $json;
+        } catch (\Throwable $e) {
+            $this->log('error', 'Multipart POST exception', ['url' => $this->sanitizeUrl($url), 'error' => $e->getMessage()]);
+            return ['success' => false, 'message' => 'Multipart POST exception: ' . $e->getMessage(), '_transport_error' => true];
+        }
+    }
+
     private function curl(string $method, string $url, ?string $body, ?float $timeout = null): array
     {
         $ch = \curl_init($url);
@@ -1923,6 +2030,7 @@ class TelegramClient implements MessagingClientInterface
             ]) : '';
             $result[] = [
                 'type' => $type, 'url' => $url, 'mime' => $mime,
+                'source_type' => (string)($attachment['source_type'] ?? ($type === 'document' ? 'document' : '')),
                 'animated' => !empty($attachment['animated']),
                 'video_note' => !empty($attachment['video_note']),
                 'animation_format' => (string)($attachment['animation_format'] ?? ''),

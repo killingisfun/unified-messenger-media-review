@@ -572,6 +572,30 @@ if (!empty($rxAgg)) {
 
 
 
+/**
+ * Classify a Telegram document by explicit document attributes. MIME tells us
+ * what the bytes are, but cannot promote a JPG/PNG sent as a document into a
+ * messageMediaPhoto.
+ */
+function tg_document_message_type(array $document): string
+{
+    $mime = strtolower((string)($document['mime_type'] ?? ''));
+    $sticker = $animated = $round = false;
+    foreach (($document['attributes'] ?? []) as $attribute) {
+        if (!is_array($attribute)) continue;
+        $attributeType = (string)($attribute['_'] ?? '');
+        $sticker = $sticker || $attributeType === 'documentAttributeSticker';
+        $animated = $animated || $attributeType === 'documentAttributeAnimated';
+        $round = $round || ($attributeType === 'documentAttributeVideo' && !empty($attribute['round_message']));
+    }
+    if ($sticker) return 'sticker';
+    if ($round) return 'video_note';
+    if ($animated) return 'animation';
+    if (str_starts_with($mime, 'video/')) return 'video';
+    if (str_starts_with($mime, 'audio/')) return 'audio';
+    return 'document';
+}
+
 function tg_guess_kind_and_meta(array $m): array
 {
     $type = strtolower($m['type'] ?? ''); // <--- ВОТ ИСПРАВЛЕНИЕ
@@ -803,6 +827,8 @@ function tg_build_attachments(array $m, string $baseUrl, $chatId): array
 
     return [[
         'type'       => $kind,
+        // Preserve the source contract independently from MIME/display kind.
+        'source_type' => $kind === 'document' ? 'document' : '',
         'animated'   => ($m['type'] ?? '') === 'animation' || $mime === 'image/gif',
         'video_note' => ($m['type'] ?? '') === 'video_note',
         'animation_format' => (string)($m['animation_format'] ?? ''),
@@ -1820,16 +1846,7 @@ function processDialogs(API $mp, array $dialogs, array $options): array
                 if (isset($media['photo'])) {
                     $lmType = 'photo';
                 } elseif (isset($media['document'])) {
-                    $docMime = strtolower((string)($media['document']['mime_type'] ?? ''));
-                    if (str_starts_with($docMime, 'image/webp')) {
-                        $lmType = 'sticker';
-                    } elseif (str_starts_with($docMime, 'video/')) {
-                        $lmType = 'video';
-                    } elseif (str_starts_with($docMime, 'audio/')) {
-                        $lmType = 'audio';
-                    } else {
-                        $lmType = 'document';
-                    }
+                    $lmType = tg_document_message_type($media['document']);
 
                     // если текста нет — попробуем подставить имя файла
                     if ($lmText === '') {
@@ -2907,9 +2924,7 @@ case 'get_messages_by_ids': {
             if (is_array($media) && ($media['_'] ?? '') === 'messageMediaDocument' && !empty($media['document'])) {
                 $mime = $media['document']['mime_type'] ?? null;
                 $raw_for_norm['mime'] = $mime;
-                if ($mime && str_starts_with(strtolower($mime), 'image/') && strtolower($mime) !== 'image/webp') $typ = 'photo';
-                if ($mime && str_starts_with(strtolower($mime), 'video/')) $typ = 'video';
-                if ($mime && str_starts_with(strtolower($mime), 'audio/')) $typ = 'audio';
+                $typ = tg_document_message_type($media['document']);
                 
                 foreach ($media['document']['attributes'] ?? [] as $a) {
                     if (($a['_'] ?? '') === 'documentAttributeFilename' && !empty($a['file_name'])) {
@@ -3182,10 +3197,7 @@ if (!empty($messageIds)) {
                                 $type = 'location';
                             } elseif (str_contains($mediaType, 'Document')) {
                                 $docMime = (string)($media['document']['mime_type'] ?? '');
-                                if (str_starts_with($docMime, 'image/webp'))      $type = 'sticker';
-                                elseif (str_starts_with($docMime, 'video/'))      $type = 'video';
-                                elseif (str_starts_with($docMime, 'audio/'))      $type = 'audio';
-                                else                                              $type = 'document';
+                                $type = tg_document_message_type($media['document']);
 
                                 $mime = $docMime ?: null;
                                 $motionSticker = $motionAnimation = $motionRound = false;
@@ -3194,9 +3206,6 @@ if (!empty($messageIds)) {
                                     $motionAnimation = $motionAnimation || ($attribute['_'] ?? '') === 'documentAttributeAnimated';
                                     $motionRound = $motionRound || (($attribute['_'] ?? '') === 'documentAttributeVideo' && !empty($attribute['round_message']));
                                 }
-                                if ($motionSticker) $type = 'sticker';
-                                elseif ($motionRound) $type = 'video_note';
-                                elseif ($motionAnimation) $type = 'animation';
 
                                 // имя файла из атрибутов (если есть)
                                 foreach ($media['document']['attributes'] ?? [] as $a) {
@@ -3464,10 +3473,7 @@ if (!empty($messageIds)) {
                             elseif (str_contains($mediaType, 'Geo'))     $type = 'location';
                             elseif (str_contains($mediaType, 'Document')) {
                                 $docMime = (string)($media['document']['mime_type'] ?? '');
-                                if (str_starts_with($docMime, 'image/webp'))      $type = 'sticker';
-                                elseif (str_starts_with($docMime, 'video/'))      $type = 'video';
-                                elseif (str_starts_with($docMime, 'audio/'))      $type = 'audio';
-                                else                                              $type = 'document';
+                                $type = tg_document_message_type($media['document']);
                                 $mime = $docMime ?: null;
                                 $motionSticker = $motionAnimation = $motionRound = false;
                                 foreach ($media['document']['attributes'] ?? [] as $attribute) {
@@ -3475,9 +3481,6 @@ if (!empty($messageIds)) {
                                     $motionAnimation = $motionAnimation || ($attribute['_'] ?? '') === 'documentAttributeAnimated';
                                     $motionRound = $motionRound || (($attribute['_'] ?? '') === 'documentAttributeVideo' && !empty($attribute['round_message']));
                                 }
-                                if ($motionSticker) $type = 'sticker';
-                                elseif ($motionRound) $type = 'video_note';
-                                elseif ($motionAnimation) $type = 'animation';
 
                                 foreach ($media['document']['attributes'] ?? [] as $a) {
                                     if (($a['_'] ?? '') === 'documentAttributeFilename' && !empty($a['file_name'])) {
@@ -3692,15 +3695,7 @@ if (!empty($messageIds)) {
                                 break;
                             }
                         }
-                        if ($mime && str_starts_with(strtolower($mime), 'image/') && strtolower($mime) !== 'image/webp') {
-                            $typ = 'photo';
-                        }
-                        if ($mime && str_starts_with(strtolower($mime), 'video/')) {
-                            $typ = 'video';
-                        }
-                        if ($mime && str_starts_with(strtolower($mime), 'audio/')) {
-                            $typ = 'audio';
-                        }
+                        $typ = tg_document_message_type($media['document']);
                     }
 
                      $adapted_raw = [

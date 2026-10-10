@@ -44,6 +44,15 @@ uses a time window for outgoing documents.
    snapshot or prematurely complete a batch. If provider children share an
    authoritative native group ID, optimistic reconciliation preserves it
    rather than replacing it with a local identity.
+7. The read-back path now has one Telegram document classifier. A
+   `messageMediaDocument` whose bytes are JPEG/PNG remains `document` with
+   `source_type: document` in history, `get_messages_by_ids` and webhook;
+   only explicit Telegram attributes retain sticker/animation/video-note
+   presentation. The PHP adapter preserves that source field.
+8. Updating an already displayed document group is two-phase: native members
+   are first merged from the registry, current page and old DOM card; the old
+   card is removed only after a new aggregate DOM node has been constructed.
+   An omitted member of a partial page is never interpreted as deletion.
 
 The native flow has not been exercised against a production chat in this
 package. Do not assume it is verified merely because focused contracts pass.
@@ -82,5 +91,9 @@ Please trace the live ordering and module loading end-to-end:
   that receipt-plus-full-message snapshots merge their attachments.
 - `tests/document-batch-receipt-state-contract.cjs` verifies accepted vs
   delivered/failed state aggregation across a single visible file card.
+- `tests/telegram-document-read-contract.php` drives the real document
+  classifier with JPG, PNG, video, sticker and animation fixtures, and checks
+  that the three read routes use it and retain `source_type` through the
+  adapter.
 
 They establish intended local invariants, not proof of the full WebView flow.

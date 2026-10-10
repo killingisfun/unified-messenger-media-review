@@ -306,6 +306,10 @@ export class ChatOutbox {
       _localDocumentBatch: nativeGroupIds.size !== 1,
       _nativeDocumentBatch: nativeGroupIds.size === 1,
     };
+    // Seed the same exact-ID registry used by later history/realtime renders.
+    // This prevents a partial refresh from forgetting a child that the
+    // optimistic replacement already displayed.
+    this.chat._rememberDocumentGroupMembers?.(members, groupId);
     // Each id was deliberately marked handled while it was held against a
     // realtime duplicate.  Make the renderer accept the canonical row again
     // for the single aggregate card, then restore every native id below.

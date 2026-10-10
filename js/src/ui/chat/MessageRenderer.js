@@ -768,12 +768,13 @@ export class MessageRenderer {
     return expanded;
   }
 
-  _removeRenderedDocumentGroupForRefresh(message) {
+  _prepareRenderedDocumentGroupRefresh(message) {
     const ids = new Set((Array.isArray(message?._albumMessageIds) ? message._albumMessageIds : [])
       .map(id => String(id || '').trim()).filter(Boolean));
-    if (ids.size < 2 || !this.chat.messagesContainer) return false;
+    if (ids.size < 2 || !this.chat.messagesContainer) return null;
     const groupKey = `gid:${String(message?.media_group_id || message?.group_id || message?.groupId || '')}`;
-    let removed = false;
+    const nodes = [];
+    const knownIds = new Set(ids);
     for (const node of [...this.chat.messagesContainer.querySelectorAll('.message')]) {
       const nodeIds = new Set([
         ...String(node.dataset?.messageIds || '').split(','),
@@ -784,17 +785,23 @@ export class MessageRenderer {
       const overlaps = [...nodeIds].some(id => ids.has(id));
       if (!sameGroup && !overlaps) continue;
       nodeIds.forEach(id => {
+        knownIds.add(id);
         this.chat.renderedMessageIds.delete(id);
-        this.chat._msgIdToGroupKey?.delete(id);
       });
-      if (node.dataset?.groupKey) this.chat._groupKeyToEl?.delete(node.dataset.groupKey);
-      node.remove();
-      removed = true;
+      nodes.push(node);
     }
-    // The old DOM owned every component id. Let the freshly assembled
-    // aggregate claim them together instead of being rejected as a duplicate.
-    if (removed) ids.forEach(id => this.chat.renderedMessageIds.delete(id));
-    return removed;
+    if (!nodes.length) return null;
+    // Keep the old card connected while the new one is built. A malformed or
+    // already-handled partial response must never erase a complete group.
+    return {
+      restore: () => knownIds.forEach(id => this.chat.renderedMessageIds.add(id)),
+      commit: () => nodes.forEach((node) => {
+        const nodeIds = String(node.dataset?.messageIds || '').split(',').map(id => id.trim()).filter(Boolean);
+        nodeIds.forEach(id => this.chat._msgIdToGroupKey?.delete(id));
+        if (node.dataset?.groupKey) this.chat._groupKeyToEl?.delete(node.dataset.groupKey);
+        node.remove();
+      }),
+    };
   }
 
   renderMessagesBatch(messages, prepend = false, options = {}) {
@@ -824,15 +831,17 @@ export class MessageRenderer {
     // Documents sent as one user-selected batch have distinct native IDs on
     // some providers.  Recover their exact persisted operation before the
     // generic provider album logic so reopening a chat keeps one file card.
+    this.chat._seedRenderedDocumentGroups?.();
     messages = this.chat._collapseLocalOutgoingDocumentBatches(displayMessages);
     messages = this.chat._collapseWhatsAppPhotoAlbums(messages);
     const frag = document.createDocumentFragment();
     let addedCount = 0;
     messages.forEach(m => {
-      this._removeRenderedDocumentGroupForRefresh(m);
+      const refresh = this._prepareRenderedDocumentGroupRefresh(m);
       if (this.chat._upsertIncomingNativeAlbum(m, frag)) { addedCount++; return; }
       const el = this.chat.renderMessage(m);
       if (el) {
+        refresh?.commit();
         const albumIds = Array.isArray(m._albumMessageIds) ? m._albumMessageIds : [];
         if (albumIds.length > 1) {
           el.dataset.messageIds = albumIds.join(',');
@@ -845,7 +854,7 @@ export class MessageRenderer {
         }
         frag.appendChild(el);
         addedCount++;
-      }
+      } else refresh?.restore();
     });
     // A repeated polling result can contain only ids already in the DOM.
     // In that case there is nothing to group, load or scroll.

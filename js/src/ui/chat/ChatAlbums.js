@@ -267,6 +267,48 @@ export class ChatAlbums {
     return membership;
   }
 
+  _rememberDocumentGroupMember(message, forcedGroupId = '') {
+    const id = this.chat._historyMessageId(message);
+    const groupId = String(forcedGroupId || message?.media_group_id || message?.group_id || message?.groupId || '').trim();
+    if (!id || !groupId) return '';
+    const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+    if (!forcedGroupId && !attachments.some(attachment => this.chat._isDocumentAttachment(attachment))) return '';
+    const key = `${String(message?.direction || '')}:${groupId}`;
+    const known = this._documentGroupMembers.get(key) || new Map();
+    const previous = known.get(id);
+    // A later receipt or partial page is an update, never a deletion of a
+    // file learned previously for this exact native group.
+    known.set(id, {
+      ...(previous || {}),
+      ...message,
+      groupId,
+      group_id: groupId,
+      media_group_id: groupId,
+      attachments: attachments.length ? attachments : (previous?.attachments || []),
+    });
+    this._documentGroupMembers.set(key, known);
+    return key;
+  }
+
+  _rememberDocumentGroupMembers(messages, forcedGroupId = '') {
+    for (const message of messages || []) this._rememberDocumentGroupMember(message, forcedGroupId);
+  }
+
+  _seedRenderedDocumentGroups() {
+    if (!this.chat.messagesContainer) return;
+    for (const node of this.chat.messagesContainer.querySelectorAll('.message[data-group-key^="gid:"]')) {
+      const groupId = String(node.dataset.groupKey || '').slice(4).trim();
+      if (!groupId) continue;
+      const records = Array.isArray(node._groupMessages) && node._groupMessages.length
+        ? node._groupMessages
+        : (node._originalData ? [node._originalData] : []);
+      // The previous server bug may have labelled one known document as photo.
+      // A rendered exact group is still authoritative membership; retain it
+      // while the corrected history/realtime snapshot arrives.
+      this._rememberDocumentGroupMembers(records, groupId);
+    }
+  }
+
   _collapseLocalOutgoingDocumentBatches(messages) {
     if (!Array.isArray(messages) || messages.length === 0) return messages || [];
     const membership = this._localOutgoingDocumentBatches();
@@ -302,21 +344,9 @@ export class ChatAlbums {
       if (!groupId) continue;
       // Direction is part of the identity: a malformed provider row may not
       // turn an incoming document into a local outgoing operation.
-      const key = `${String(message?.direction || '')}:${groupId}`;
+      const key = this._rememberDocumentGroupMember(message);
+      if (!key) continue;
       currentGroupKeys.add(key);
-      const known = this._documentGroupMembers.get(key) || new Map();
-      const id = this.chat._historyMessageId(message);
-      if (!id) continue;
-      const previous = known.get(id);
-      // A receipt-only partial update must not clear an already-known file.
-      known.set(id, {
-        ...(previous || {}),
-        ...message,
-        attachments: Array.isArray(message?.attachments) && message.attachments.length
-          ? message.attachments
-          : (previous?.attachments || []),
-      });
-      this._documentGroupMembers.set(key, known);
       const record = groups.get(key) || { key, groupId, members: [] };
       record.members.push({ index, message });
       groups.set(key, record);

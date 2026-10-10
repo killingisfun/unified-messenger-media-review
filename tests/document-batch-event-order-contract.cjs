@@ -82,4 +82,31 @@ const merged = new MessageRenderer(chat)._expandMessagesForReconciliation([
 assert.equal(merged.length, 1, 'duplicate native IDs become one reconciliation record');
 assert.equal(merged[0].attachments.length, 1, 'the later full snapshot is not discarded after a receipt');
 
+// Replacement is two-phase: an incomplete/malformed next card must not erase
+// the already rendered complete group before a new DOM node exists.
+let removed = false;
+const existingGroup = {
+  dataset: { groupKey: 'gid:tg-native-docs-1', messageIds: '101,102,103' },
+  _groupMessages: [child('101'), child('102'), child('103')],
+  remove() { removed = true; },
+};
+const refreshChat = {
+  messagesContainer: { querySelectorAll: () => [existingGroup] },
+  renderedMessageIds: new Set(['101', '102', '103']),
+  _msgIdToGroupKey: new Map([['101', 'gid:tg-native-docs-1']]),
+  _groupKeyToEl: new Map([['gid:tg-native-docs-1', existingGroup]]),
+};
+const refreshRenderer = new MessageRenderer(refreshChat);
+const refresh = refreshRenderer._prepareRenderedDocumentGroupRefresh({
+  media_group_id: 'tg-native-docs-1', _albumMessageIds: ['101', '102'],
+});
+assert.equal(removed, false, 'old card remains visible while the replacement is only being prepared');
+refresh.restore();
+assert.deepEqual([...refreshChat.renderedMessageIds].sort(), ['101', '102', '103'], 'a failed replacement restores every existing component id');
+const commit = refreshRenderer._prepareRenderedDocumentGroupRefresh({
+  media_group_id: 'tg-native-docs-1', _albumMessageIds: ['101', '102', '103'],
+});
+commit.commit();
+assert.equal(removed, true, 'old group is removed only when caller has built the replacement');
+
 console.log('document-batch-event-order-contract-ok');

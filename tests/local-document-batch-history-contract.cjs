@@ -81,4 +81,26 @@ const secondUpdate = acrossUpdates._collapseLocalOutgoingDocumentBatches([native
 assert.equal(secondUpdate.length, 1, 'the later native child updates one group presentation');
 assert.deepEqual(secondUpdate[0]._albumMessageIds, ['201', '202'], 'the persistent registry retains the earlier exact child');
 
+// A confirmed optimistic card can exist before the registry sees a history
+// page. Seed its exact native members first; a later partial refresh must not
+// split off or forget the image-document that was not included in that page.
+const optimisticRegistry = new ChatAlbums(makeChat([]));
+const brokenLegacyPhoto = {
+  ...nativeFirst,
+  attachments: [{ type: 'photo', mime: 'image/jpeg', filename: 'first.jpg' }],
+};
+optimisticRegistry.chat.messagesContainer = {
+  querySelectorAll: () => [{
+    dataset: { groupKey: 'gid:tg-native-docs-1' },
+    _groupMessages: [brokenLegacyPhoto, nativeSecond, { ...documentMessage('203', 30), media_group_id: 'tg-native-docs-1' }],
+  }],
+};
+optimisticRegistry._seedRenderedDocumentGroups();
+const refreshedPartial = optimisticRegistry._collapseLocalOutgoingDocumentBatches([
+  nativeSecond,
+  { ...documentMessage('203', 30), media_group_id: 'tg-native-docs-1' },
+]);
+assert.equal(refreshedPartial.length, 1, 'a partial refresh replaces neither the old card nor one child');
+assert.deepEqual(refreshedPartial[0]._albumMessageIds, ['201', '202', '203'], 'existing card membership is merged before the partial update renders');
+
 console.log('local-document-batch-history-contract-ok');
