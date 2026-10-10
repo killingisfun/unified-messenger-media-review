@@ -7,13 +7,13 @@ import { ReactionActors } from './chat/ReactionActors.js?v=20261004-perf-r1';
 import { ChatReactions } from './chat/ChatReactions.js?v=20261004-perf-r1';
 import { MediaGallery } from './chat/MediaGallery.js?v=20261009-download-names-r1';
 import { MediaUrls } from './chat/MediaUrls.js?v=20261001-static-sticker-r5';
-import { MessageRenderer } from './chat/MessageRenderer.js?v=20261010-video-contract-r2';
-import { ChatOutbox } from './chat/ChatOutbox.js?v=20261010-video-contract-r2';
+import { MessageRenderer } from './chat/MessageRenderer.js?v=20261010-video-contract-r3';
+import { ChatOutbox } from './chat/ChatOutbox.js?v=20261010-video-contract-r3';
 import { ChatAlbums } from './chat/ChatAlbums.js?v=20261009-document-batch-r1';
 import { ChatHistory } from './chat/ChatHistory.js?v=20261004-perf-r1';
 import { MessageReceipts } from './chat/MessageReceipts.js?v=20260923-telegram-delete-r11';
 import { ChatComposer } from './chat/ChatComposer.js?v=20261009-attachment-compose-r1';
-import { MediaLoader } from './chat/MediaLoader.js?v=20261010-video-contract-r2';
+import { MediaLoader } from './chat/MediaLoader.js?v=20261010-video-contract-r3';
 import { ChatProfile } from './chat/ChatProfile.js?v=20261003-avatar-cache-r17';
 import { SendJournal } from './chat/SendJournal.js?v=20260923-telegram-delete-r11';
 import { ChatRealtime } from './chat/ChatRealtime.js?v=20261004-perf-r1';
@@ -527,6 +527,7 @@ if (titleHost) {
   _toLightboxOpenUrl(...args) { return this.mediaGallery._toLightboxOpenUrl(...args); }
   _handleDownloadAllClick(...args) { return this.mediaGallery._handleDownloadAllClick(...args); }
   patchMessageDOM(...args) { return this.messageRenderer.patchMessageDOM(...args); }
+  _patchAttachmentPresentation(...args) { return this.messageRenderer._patchAttachmentPresentation(...args); }
   _isVisualOutgoingMessage(...args) { return this.chatOutbox._isVisualOutgoingMessage(...args); }
   _pendingWhatsAppBatchElement(...args) { return this.chatAlbums._pendingWhatsAppBatchElement(...args); }
   _scheduleHeldBatchIncomingFlush(...args) { return this.chatAlbums._scheduleHeldBatchIncomingFlush(...args); }

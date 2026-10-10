@@ -1,4 +1,4 @@
-import { BaseChat } from '../BaseChat.js?v=20261010-video-contract-r2';
+import { BaseChat } from '../BaseChat.js?v=20261010-video-contract-r3';
 export class VKChat extends BaseChat {
   constructor() { super({ provider: 'vk' }); }
 }

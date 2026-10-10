@@ -40,6 +40,13 @@ video snapshot:
 The fixture contracts deliberately cover both realtime-before-response and
 poster unavailable/ready transitions. They require no provider account.
 
+The current update also preserves the local decoded `width`, `height`, and
+`duration` only when the incoming server attachment omits those values. The
+server record still owns its native ID, MIME, remote URL and download action.
+This prevents the transient hybrid where a provider-confirmed message had a
+local frame but lost its portrait/square geometry while server metadata was
+still incomplete.
+
 ## Review questions
 
 1. Is the attachment contract sufficiently explicit to distinguish a video

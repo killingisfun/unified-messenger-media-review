@@ -442,6 +442,22 @@ export class MediaLoader {
     if (message?.classList.contains('is-single-video')) message.style.setProperty('--video-bubble-width', `${displayWidth + 30}px`);
   }
 
+  _rememberVideoPresentation(video) {
+    if (!video || video.tagName !== 'VIDEO') return;
+    const message = video.closest('.message');
+    const index = Number(video.dataset.attachmentIndex);
+    const attachment = Number.isInteger(index) ? message?._originalData?.attachments?.[index] : null;
+    if (!attachment) return;
+    const width = Math.max(0, Number(video.videoWidth) || 0);
+    const height = Math.max(0, Number(video.videoHeight) || 0);
+    const duration = Math.max(0, Number(video.duration) || 0);
+    if (width > 0 && height > 0) {
+      attachment.width = width;
+      attachment.height = height;
+    }
+    if (duration > 0 && Number.isFinite(duration)) attachment.duration = duration;
+  }
+
   _prepareLazyImageLayout(image) {
     if (!image || image.tagName !== 'IMG' || image.dataset.bcOrientationAttached === '1') return;
     const holder = image.closest('.media-holder');
@@ -667,7 +683,10 @@ export class MediaLoader {
         else if (!el.dataset.lazySrc && el.getAttribute('src') && el.complete) error();
       } else if (el.tagName === 'VIDEO' || el.tagName === 'AUDIO') {
         if (el.tagName === 'VIDEO') {
-          const orient = () => this.chat._applyVideoDimensions(el, el.videoWidth, el.videoHeight);
+          const orient = () => {
+            this.chat._applyVideoDimensions(el, el.videoWidth, el.videoHeight);
+            this._rememberVideoPresentation(el);
+          };
           if (el._bcOrientationHandler) el.removeEventListener('loadedmetadata', el._bcOrientationHandler);
           el._bcOrientationHandler = orient;
           el.addEventListener('loadedmetadata', orient);

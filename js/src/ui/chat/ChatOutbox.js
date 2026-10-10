@@ -32,8 +32,34 @@ export class ChatOutbox {
     // any order.  Merge rather than replace: a sparse confirmation must not
     // erase the local preview/geometry before the server has supplied its
     // complete attachment record.
+    const previousMessage = element._originalData || {};
+    const incomingMessage = this.chat._messageForCurrentChat(realMessage);
+    const mergedMessage = mergeMessageUpdate(this.chat.source, previousMessage, incomingMessage);
+    // A send response/realtime row frequently reaches us before Telegram has
+    // completed its thumbnail/metadata extraction.  Its attachment is still
+    // authoritative for identity, MIME and remote URL, but zeros/omissions
+    // must not collapse the already decoded local geometry while the same
+    // card is being promoted from Blob to provider media.
+    const localAttachments = Array.isArray(previousMessage.attachments) ? previousMessage.attachments : [];
+    const serverAttachments = Array.isArray(mergedMessage.attachments) ? mergedMessage.attachments : [];
+    const attachments = serverAttachments.map((attachment, index) => {
+      const local = localAttachments[index] || {};
+      const preserveNumber = (key) => {
+        const current = Number(attachment?.[key]);
+        const fallback = Number(local?.[key]);
+        return Number.isFinite(current) && current > 0 ? current
+          : (Number.isFinite(fallback) && fallback > 0 ? fallback : attachment?.[key]);
+      };
+      return {
+        ...attachment,
+        width: preserveNumber('width'),
+        height: preserveNumber('height'),
+        duration: preserveNumber('duration'),
+      };
+    });
     const syncedMessage = this.chat._mergeMessageState({
-      ...mergeMessageUpdate(this.chat.source, element._originalData || {}, this.chat._messageForCurrentChat(realMessage)),
+      ...mergedMessage,
+      attachments,
       // The DOM node began as a local provisional bubble. A provider record
       // with a native id is now authoritative, even if an older adapter
       // happened to retain its local optimistic flag.
@@ -71,8 +97,10 @@ export class ChatOutbox {
     // reaction requests.
     element._originalData = syncedMessage;
     // Keep the same DOM node for every media kind. A subsequent authoritative
-    // realtime/history patch updates attachment presentation in-place; this
-    // method only establishes the identity and must not restart local media.
+    // realtime/history patch updates attachment presentation in-place. The
+    // retained local media frame stays stable until a verified server poster
+    // exists; this method never rebuilds a second bubble.
+    this.chat._patchAttachmentPresentation?.(element, syncedMessage);
     const currentActions = element.querySelector(':scope > .message-actions');
     const actionsMarkup = renderMessageActions(this.chat.source, syncedMessage, this.chat.providerCapabilities);
     if (currentActions) currentActions.outerHTML = actionsMarkup;

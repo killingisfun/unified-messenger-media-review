@@ -1,4 +1,4 @@
-import { BaseChat } from '../BaseChat.js?v=20261010-video-contract-r2';
+import { BaseChat } from '../BaseChat.js?v=20261010-video-contract-r3';
 import { WhatsappChat } from '../WhatsappChat.js?v=20261009-attachment-compose-r2';
 import { TelegramChat } from './TelegramChat.js?v=20261009-attachment-compose-r2';
 import { VKChat } from './VKChat.js?v=20261004-chat-zip-r3';

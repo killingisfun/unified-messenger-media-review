@@ -1,4 +1,4 @@
-import { BaseChat } from './BaseChat.js?v=20261010-video-contract-r2';
+import { BaseChat } from './BaseChat.js?v=20261010-video-contract-r3';
 import { whatsappAlbumTransport } from './services/transports/whatsappAlbum.js';
 
 /**
