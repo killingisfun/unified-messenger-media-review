@@ -170,11 +170,11 @@ export class MediaLoader {
       : '';
 
     if (lazyPoster) {
-      target.poster = lazyPoster;
-      // The video element has a real image poster before the MP4 canplay
-      // event. Keep that state explicit so the shared loading surface does
-      // not hide the useful first frame behind its own spinner.
-      target.dataset.bcHasPoster = '1';
+      // A successful HTTP response is not proof of a useful thumbnail: the
+      // Telegram relay can deliberately return a transparent 1x1 placeholder.
+      // Verify/decode the poster separately before treating it as a visual
+      // surface, otherwise the deferred player is just a black rectangle.
+      this._loadVideoPoster(target, lazyPoster);
       delete target.dataset.lazyPoster;
     }
     if (target.tagName === 'VIDEO' && target.dataset.deferVideo === '1') {
@@ -208,6 +208,50 @@ export class MediaLoader {
       try { target.load(); } catch {}
     }
     delete target.dataset.lazyObserved;
+  }
+
+  _loadVideoPoster(video, rawUrl) {
+    if (!video || video.tagName !== 'VIDEO') return;
+    const url = this.chat._safeRemoteUrl(rawUrl || '');
+    const surface = video.closest('.video-player');
+    if (!url) {
+      delete video.dataset.bcHasPoster;
+      if (surface && video.dataset.deferVideo === '1') {
+        surface.dataset.posterState = 'unavailable';
+        surface.dataset.mediaState = 'unavailable';
+      }
+      return;
+    }
+    if (video.dataset.bcPosterUrl === url && video.dataset.bcHasPoster === '1') return;
+    const token = `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    video.dataset.bcPosterProbe = token;
+    video.dataset.bcPosterUrl = url;
+    delete video.dataset.bcHasPoster;
+    if (surface) {
+      surface.dataset.posterState = 'loading';
+      if (video.dataset.deferVideo === '1') surface.dataset.mediaState = 'poster-loading';
+    }
+    const probe = new Image();
+    const unavailable = () => {
+      if (!video.isConnected || video.dataset.bcPosterProbe !== token) return;
+      delete video.dataset.bcHasPoster;
+      if (surface) {
+        surface.dataset.posterState = 'unavailable';
+        if (video.dataset.deferVideo === '1') surface.dataset.mediaState = 'unavailable';
+      }
+    };
+    probe.onload = () => {
+      if (probe.naturalWidth <= 1 || probe.naturalHeight <= 1) return unavailable();
+      if (!video.isConnected || video.dataset.bcPosterProbe !== token) return;
+      video.poster = url;
+      video.dataset.bcHasPoster = '1';
+      if (surface) {
+        surface.dataset.posterState = 'ready';
+        if (video.dataset.deferVideo === '1') surface.dataset.mediaState = 'poster';
+      }
+    };
+    probe.onerror = unavailable;
+    probe.src = url;
   }
 
   _scheduleWhatsAppLazyMediaFlush() {

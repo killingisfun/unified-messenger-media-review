@@ -46,6 +46,7 @@ export class MessageRenderer {
     }
     const updatedMsg = payload;
     el._originalData = updatedMsg;
+    this._patchAttachmentPresentation(el, updatedMsg);
 
     // A later partial update (realtime, receipt or reaction snapshot) may
     // carry the human text but omit the service marker.  The old generic
@@ -123,6 +124,47 @@ export class MessageRenderer {
       }
     }
     return true;
+  }
+
+  _patchAttachmentPresentation(el, message) {
+    const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+    if (!attachments.length) return;
+    for (const video of el.querySelectorAll?.('video.msg-video[data-attachment-index]') || []) {
+      const index = Number(video.dataset.attachmentIndex);
+      const att = attachments[index];
+      if (!att) continue;
+      const { displayUrl, openUrl } = this.chat._pickBestMediaUrl(att);
+      const source = video.querySelector('source');
+      const nextUrl = this.chat._safeRemoteUrl(displayUrl || openUrl || '');
+      const currentUrl = String(source?.getAttribute?.('src') || source?.dataset?.lazySrc || video.currentSrc || video.src || '');
+      const localPreview = currentUrl.startsWith('blob:');
+      if (nextUrl) {
+        // Confirmation must not restart a video or throw away the browser's
+        // local first frame. Keep Blob playback stable and let the next
+        // history render own the durable provider URL.
+        if (localPreview) {
+          video.dataset.serverMediaUrl = nextUrl;
+        } else if (source && currentUrl !== nextUrl && video.paused && (video.readyState || 0) === 0) {
+          source.dataset.lazySrc = nextUrl;
+          source.removeAttribute('src');
+        } else if (currentUrl !== nextUrl) {
+          video.dataset.serverMediaUrl = nextUrl;
+        }
+      }
+      const poster = this.chat._safeRemoteUrl(att.poster || att.preview_url || att.preview || att.thumbnail || '');
+      if (poster) this.chat._loadVideoPoster(video, poster);
+      this.chat._applyVideoDimensions(video, att.width ?? att.w, att.height ?? att.h);
+      const filename = this.chat._pickDownloadName(att.filename || att.title || 'video', att.mime, openUrl || displayUrl || '');
+      const download = this.chat._withDlParam(this.chat._withNameParam(openUrl || displayUrl || '', filename));
+      if (download) {
+        video.dataset.downloadUrl = download;
+        const link = video.closest('.video-holder')?.querySelector('.media-download');
+        if (link) {
+          link.href = download;
+          link.download = filename;
+        }
+      }
+    }
   }
 
   _fallbackAvatarUrl(name = '') {
@@ -346,7 +388,7 @@ export class MessageRenderer {
       ? ''
       : (rawBodyText.length ? this.chat.linkify(rawBodyText) : '');
     let attachmentsHtml = '';
-    const renderSingle = (att) => {
+    const renderSingle = (att, attachmentIndex = -1) => {
       if (!att) return '';
       const {
         openUrl,
@@ -528,7 +570,13 @@ export class MessageRenderer {
         const dimensionAttr = Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0
           ? ` data-video-width="${Math.min(100000, Math.floor(width))}" data-video-height="${Math.min(100000, Math.floor(height))}"`
           : '';
-        return `<div class="${videoHolderClass}"${mediaRefreshAttr}><div class="video-player"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr}${dimensionAttr} aria-label="${this.chat._escapeHtml(`${videoLabel} ${filename}`)}" data-lazy="1" data-fallback-label="${safeFilename}" data-download-url="${safeDownload}"><source data-lazy-src="${src}" type="${safeVideoMime}"></video></div><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
+        const durationSeconds = Math.max(0, Number(att.duration) || 0);
+        const duration = durationSeconds > 0 ? `${Math.floor(durationSeconds / 60)}:${String(Math.floor(durationSeconds % 60)).padStart(2, '0')}` : '';
+        const placeholder = poster
+          ? 'Загрузка превью видео'
+          : `Превью недоступно${duration ? ` · ${duration}` : ''}`;
+        const initialState = poster ? 'poster-loading' : 'unavailable';
+        return `<div class="${videoHolderClass}"${mediaRefreshAttr}><div class="video-player" data-media-state="${initialState}" data-poster-state="${poster ? 'loading' : 'unavailable'}"><video class="msg-video${isVideoNote ? ' msg-video-note' : ''}" controls playsinline preload="${preload}"${posterAttr}${deferredAttr}${dimensionAttr} aria-label="${this.chat._escapeHtml(`${videoLabel} ${filename}`)}" data-lazy="1" data-attachment-index="${attachmentIndex}" data-fallback-label="${safeFilename}" data-download-url="${safeDownload}"><source data-lazy-src="${src}" type="${safeVideoMime}"></video><div class="video-preview-placeholder" aria-hidden="true"><i class="bi bi-play-circle"></i><span>${this.chat._escapeHtml(placeholder)}</span></div></div><div class="media-actions mt-1 small"><a class="media-download" href="${safeDownload}" download="${safeFilename}"><i class="bi bi-download" aria-hidden="true"></i><span>Скачать ${isVideoNote ? 'кружок' : 'видео'}</span></a></div></div>`;
       }
       if (attachmentType === 'audio') {
         const src = this.chat._escapeHtml(displayUrl || '');
@@ -603,7 +651,7 @@ export class MessageRenderer {
                 ${isOptimistic ? '' : `<a class="tile-dl" href="${downloadUrl}" download="${filename}" title="Скачать фото"><i class="bi bi-download"></i></a>`}
             </div>`;
       }).join('');
-      const extraFiles = otherAttachments.map(renderSingle).filter(Boolean);
+      const extraFiles = otherAttachments.map((attachment) => renderSingle(attachment, backendMedia.indexOf(attachment))).filter(Boolean);
       const downloadAllClass = extraFiles.length ? 'files-download-all' : 'album-download-all';
       attachmentsHtml = `
             <div class="album-grid ${gridClass}">${tiles}</div>
@@ -616,7 +664,7 @@ export class MessageRenderer {
                 </button>
             </div>`}`;
     } else if (backendMedia.length) {
-      const parts = backendMedia.map(renderSingle).filter(Boolean);
+      const parts = backendMedia.map((attachment, index) => renderSingle(attachment, index)).filter(Boolean);
       const downloadAllBtn = parts.length > 1 ? `
         <div class="media-actions text-center mt-2">
           <button type="button" class="btn btn-sm btn-outline-secondary files-download-all">

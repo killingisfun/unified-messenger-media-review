@@ -22,6 +22,24 @@ production configuration.
   `tests/telegram-document-read-contract.php` cover the server and UI
   normalization boundaries without talking to Telegram.
 
+## Reconciliation and poster follow-up
+
+The latest update closes two UI boundaries that were not covered by the first
+video snapshot:
+
+- Every provider, including WhatsApp, now uses exact native-message identity
+  when a realtime/history record reaches the UI before the send response. The
+  local operation card is retained and absorbs the provider record instead of
+  leaving two cards or throwing away its local Blob preview.
+- An attachment confirmation updates the existing card's available URL,
+  download target, poster and dimensions in place. It does not restart active
+  playback. A video poster is accepted only after a separate image decode;
+  missing, failed or transparent 1x1 thumbnails get an explicit preview-not-
+  available surface instead of a black player.
+
+The fixture contracts deliberately cover both realtime-before-response and
+poster unavailable/ready transitions. They require no provider account.
+
 ## Review questions
 
 1. Is the attachment contract sufficiently explicit to distinguish a video

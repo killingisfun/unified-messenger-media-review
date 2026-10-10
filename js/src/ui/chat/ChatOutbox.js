@@ -1,5 +1,5 @@
 import { originalAvatar } from '../avatar.js';
-import { getProvider, normalizeMessage, validateAttachmentSelection } from '../../domain/providers.js';
+import { getProvider, mergeMessageUpdate, normalizeMessage, validateAttachmentSelection } from '../../domain/providers.js';
 import { readScopedSelfProfile, selfProfileAccountKey, writeScopedSelfProfile } from '../../core/selfProfileCache.js';
 import { renderMessageActions } from '../components/MessageActions.js';
 
@@ -28,8 +28,12 @@ export class ChatOutbox {
 
   _morphOptimisticMessage(element, realMessage) {
     if (!element || !realMessage) return;
+    // A receipt, send response and realtime/history snapshot may arrive in
+    // any order.  Merge rather than replace: a sparse confirmation must not
+    // erase the local preview/geometry before the server has supplied its
+    // complete attachment record.
     const syncedMessage = this.chat._mergeMessageState({
-      ...this.chat._messageForCurrentChat(realMessage),
+      ...mergeMessageUpdate(this.chat.source, element._originalData || {}, this.chat._messageForCurrentChat(realMessage)),
       // The DOM node began as a local provisional bubble. A provider record
       // with a native id is now authoritative, even if an older adapter
       // happened to retain its local optimistic flag.
@@ -66,6 +70,9 @@ export class ChatOutbox {
     // Refresh only this bubble and retain its real provider ID for reply and
     // reaction requests.
     element._originalData = syncedMessage;
+    // Keep the same DOM node for every media kind. A subsequent authoritative
+    // realtime/history patch updates attachment presentation in-place; this
+    // method only establishes the identity and must not restart local media.
     const currentActions = element.querySelector(':scope > .message-actions');
     const actionsMarkup = renderMessageActions(this.chat.source, syncedMessage, this.chat.providerCapabilities);
     if (currentActions) currentActions.outerHTML = actionsMarkup;
@@ -89,6 +96,26 @@ export class ChatOutbox {
     }
     this.chat._applyReceiptIcon(icon, syncedMessage, false);
     return element;
+  }
+
+  _adoptExistingProviderMessage(element, existing, nativeId) {
+    if (!element || !existing || existing === element) return null;
+    const snapshot = existing._originalData || {
+      id: nativeId,
+      message_id: nativeId,
+      direction: 'out',
+      attachments: [],
+    };
+    // Realtime/history may beat the send response.  The previous code removed
+    // the optimistic card (and its local video preview) and kept the server
+    // card, which can still lack a thumbnail.  Preserve the operation's DOM
+    // identity instead, merge the authoritative record into it, then remove
+    // the duplicate provider node.
+    if (existing.isConnected) existing.remove();
+    const active = this.chat._morphOptimisticMessage(element, snapshot) || element;
+    this.chat.renderedMessageIds.add(String(nativeId));
+    this.chat._scheduleOutgoingReconciliation(active, false);
+    return active;
   }
 
   _consumeOptimisticMessage(realMessage) {
@@ -530,6 +557,17 @@ export class ChatOutbox {
     const nativeId = this.chat._whatsAppNativeMessageId(response?.message_id ?? response?.messageId);
     if (!nativeId || !element?.isConnected) return false;
 
+    const existing = this._findRenderedNativeMessage(nativeId, element);
+    if (existing) {
+      this._adoptExistingProviderMessage(element, existing, nativeId);
+      return true;
+    }
+    if (this.chat.renderedMessageIds.has(nativeId)) {
+      this._revokeOptimisticObjectUrls(element);
+      element.remove();
+      return true;
+    }
+
     // WPPConnect has accepted this exact message and returned its provider id.
     // It is sufficient to make reply/reaction targets valid immediately;
     // background GET reconciliation still replaces the lightweight metadata
@@ -567,9 +605,7 @@ export class ChatOutbox {
     // into a second copy; the authoritative row already in the DOM wins.
     const existing = this._findRenderedNativeMessage(nativeId, element);
     if (existing) {
-      this._revokeOptimisticObjectUrls(element);
-      element.remove();
-      this.chat.renderedMessageIds.add(nativeId);
+      this._adoptExistingProviderMessage(element, existing, nativeId);
       return true;
     }
     // Some grouped/virtualized rows deliberately retain no standalone DOM
